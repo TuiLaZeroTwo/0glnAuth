@@ -22,7 +22,9 @@ use pumpkin_plugin_api::text::TextComponent;
 use pumpkin_plugin_api::{Context, Player, Server};
 
 use crate::messages::msg;
+use crate::premium::resolve_premium;
 use crate::session::{is_session_valid, now_secs};
+use crate::storage::Account;
 use crate::validation::normalize_name;
 use crate::{AppState, SharedState};
 
@@ -187,7 +189,7 @@ impl EventHandler<PlayerJoinEvent> for JoinHandler {
             }
         };
 
-        // Premium flag: stored premium_id auto-authenticates (no live check here).
+        // 1. Stored premium_id auto-authenticates (no live check here).
         if account.as_ref().is_some_and(|a| a.premium_id.is_some()) {
             mark_authed(&self.state, &normalized);
             data.player
@@ -195,7 +197,27 @@ impl EventHandler<PlayerJoinEvent> for JoinHandler {
             return data;
         }
 
-        // Session resume: valid expiry AND matching IP, no new session write.
+        // 2. Live premium check: no account, or an account without premium_id.
+        let check_enabled = lock_read(&self.state).cfg.premium_check_enabled;
+        if check_enabled && account.as_ref().is_none_or(|a| a.premium_id.is_none()) {
+            match self.premium_verdict(&normalized, now_secs()) {
+                PremiumVerdict::Premium(id) => {
+                    if self.persist_premium(&data, &normalized, &name, &ip, id) {
+                        mark_authed(&self.state, &normalized);
+                        data.player.send_system_message(
+                            TextComponent::text(msg("premium.auto")),
+                            false,
+                        );
+                        return data;
+                    }
+                    // Persist failure: fall through to the prompt, fail closed.
+                }
+                PremiumVerdict::Cracked => {}
+                PremiumVerdict::Unavailable => {}
+            }
+        }
+
+        // 3. Session resume: valid expiry AND matching IP, no new session write.
         if account.is_some() {
             let sess = lock_read(&self.state).store.get_session(&normalized);
             let resumed = match sess {
@@ -214,7 +236,7 @@ impl EventHandler<PlayerJoinEvent> for JoinHandler {
             }
         }
 
-        // Unauthenticated: record join time for the timeout sweep and prompt.
+        // 4. Unauthenticated: record join time for the timeout sweep and prompt.
         {
             let mut st = lock_write(&self.state);
             st.joined_at.insert(normalized.clone(), now_secs());
@@ -228,6 +250,86 @@ impl EventHandler<PlayerJoinEvent> for JoinHandler {
                 .send_system_message(TextComponent::text(msg("join.register")), false);
         }
         data
+    }
+}
+
+/// Outcome of the join-time premium check.
+enum PremiumVerdict {
+    Premium(String),
+    Cracked,
+    Unavailable,
+}
+
+impl JoinHandler {
+    /// Cache-then-live premium lookup. Only live resolutions are cached;
+    /// transport failures (fail closed) leave the cache untouched.
+    fn premium_verdict(&self, normalized: &str, now: u64) -> PremiumVerdict {
+        let cache_hit = { lock_read(&self.state).premium.get(normalized, now) };
+        if cache_hit.is_some() {
+            // A cached `false` is a known cracked verdict; a cached `true`
+            // without a stored premium_id (earlier persist failure, deleted
+            // account) cannot auto-login without the id: fail closed, prompt.
+            return PremiumVerdict::Cracked;
+        }
+        match resolve_premium(normalized) {
+            Ok((true, Some(id))) => {
+                lock_read(&self.state)
+                    .premium
+                    .put(normalized.to_string(), true, now);
+                PremiumVerdict::Premium(id)
+            }
+            Ok((false, _)) => {
+                lock_read(&self.state)
+                    .premium
+                    .put(normalized.to_string(), false, now);
+                PremiumVerdict::Cracked
+            }
+            Ok((true, None)) => PremiumVerdict::Cracked,
+            Err(e) => {
+                tracing::warn!("gln-auth: premium lookup failed for {normalized}: {e}");
+                PremiumVerdict::Unavailable
+            }
+        }
+    }
+
+    /// Persists the premium_id: updates an existing account or creates a new
+    /// one for a first-join premium player. True on success.
+    fn persist_premium(
+        &self,
+        data: &PlayerJoinEventData,
+        normalized: &str,
+        name: &str,
+        ip: &str,
+        id: String,
+    ) -> bool {
+        let uuid = data.player.get_id().to_string();
+        let now = now_secs();
+        let account = match lock_read(&self.state).store.get_account(normalized) {
+            Ok(Some(mut existing)) => {
+                existing.premium_id = Some(id);
+                existing.last_ip = ip.to_string();
+                existing.last_seen = now as i64;
+                existing
+            }
+            Ok(None) => Account {
+                name: name.to_string(),
+                uuid,
+                premium_id: Some(id),
+                hash: String::new(),
+                last_ip: ip.to_string(),
+                last_seen: now as i64,
+                created: now as i64,
+            },
+            Err(e) => {
+                tracing::error!("gln-auth: premium persist lookup failed for {normalized}: {e}");
+                return false;
+            }
+        };
+        if let Err(e) = lock_read(&self.state).store.save_account(&account) {
+            tracing::error!("gln-auth: premium persist save failed for {normalized}: {e}");
+            return false;
+        }
+        true
     }
 }
 

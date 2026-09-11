@@ -3,6 +3,7 @@ mod config;
 mod handlers;
 mod hash;
 mod messages;
+mod premium;
 mod session;
 mod storage;
 mod validation;
@@ -25,6 +26,7 @@ pub struct AppState {
     pub authed: HashSet<String>,
     pub failures: HashMap<String, u32>,
     pub joined_at: HashMap<String, u64>,
+    pub premium: crate::premium::PremiumCache,
 }
 
 struct GlnAuth;
@@ -44,6 +46,7 @@ impl Plugin for GlnAuth {
             permissions: vec![
                 pumpkin_plugin_api::permissions::FS_READ_DATA.into(),
                 pumpkin_plugin_api::permissions::FS_WRITE_DATA.into(),
+                pumpkin_plugin_api::permissions::HTTP_OUTBOUND.into(),
             ],
         }
     }
@@ -75,10 +78,11 @@ impl Plugin for GlnAuth {
 
         let state: SharedState = Arc::new(RwLock::new(AppState {
             store,
-            cfg,
+            cfg: cfg.clone(),
             authed: HashSet::new(),
             failures: HashMap::new(),
             joined_at: HashMap::new(),
+            premium: crate::premium::PremiumCache::new(cfg.premium_cache_minutes * 60),
         }));
 
         handlers::register_handlers(&context, state.clone())?;
