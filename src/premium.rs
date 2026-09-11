@@ -72,6 +72,7 @@ pub fn parse_mojang_profile_response(status: u16, body: &str) -> Option<String> 
 fn fetch_once(url: &str) -> Result<(u16, String), String> {
     let resp = Client::new()
         .get(url)
+        .connect_timeout(std::time::Duration::from_secs(5))
         .send()
         .map_err(|e| format!("{url}: {e}"))?;
     let status = resp.status_code();
