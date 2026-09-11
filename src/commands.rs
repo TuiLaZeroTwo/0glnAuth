@@ -106,7 +106,11 @@ pub fn build_commands(state: SharedState) -> Vec<(Command, &'static str)> {
             PLAYER_PERMISSION,
         ),
         (
-            Command::new(&["login".to_string()], "Login to your account").then(
+            Command::new(
+                &["login".to_string(), "l".to_string(), "log".to_string()],
+                "Login to your account",
+            )
+            .then(
                 CommandNode::argument("password", &ArgumentType::String(StringType::Quotable))
                     .execute(LoginHandler { state: state.clone() }),
             ),
