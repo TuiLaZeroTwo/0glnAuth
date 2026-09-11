@@ -11,11 +11,11 @@ use std::sync::{RwLockReadGuard, RwLockWriteGuard};
 
 use pumpkin_plugin_api::events::{
     EventHandler, EventPriority, PlayerChatEvent, PlayerCommandPreprocessEvent, PlayerJoinEvent,
-    PlayerLeaveEvent, PlayerMoveEvent,
+    PlayerLeaveEvent, PlayerMoveEvent, PlayerPreLoginEvent,
 };
 use pumpkin_plugin_api::events_wit::{
     PlayerChatEventData, PlayerCommandPreprocessEventData, PlayerJoinEventData,
-    PlayerLeaveEventData, PlayerMoveEventData,
+    PlayerLeaveEventData, PlayerMoveEventData, PlayerPreLoginEventData,
 };
 use pumpkin_plugin_api::player::JavaKickOptions;
 use pumpkin_plugin_api::text::TextComponent;
@@ -52,6 +52,61 @@ fn lock_write(state: &SharedState) -> RwLockWriteGuard<'_, AppState> {
 /// True if the player with this (already normalized) name is authenticated.
 pub fn is_authed(state: &SharedState, normalized: &str) -> bool {
     lock_read(state).authed.contains(normalized)
+}
+
+/// Which join prompt the player should get.
+pub enum AccountStatus {
+    /// No stored account: prompt /register.
+    Missing,
+    /// Stored account: prompt /login.
+    Exists,
+    /// Store error: fail closed as unauthenticated, but prompt /login — an
+    /// existing account would be pointed at the wrong command by /register.
+    Unknown,
+}
+
+/// Message key for the join prompt, per account status (fail-closed: both
+/// unknown and missing leave the player unauthenticated).
+pub fn join_prompt_key(status: AccountStatus) -> &'static str {
+    match status {
+        AccountStatus::Missing => "join.register",
+        AccountStatus::Exists | AccountStatus::Unknown => "join.login",
+    }
+}
+
+/// Records a failed login for `ip` and reports whether the per-IP limit is
+/// now reached (>= max tries). Caps the stored counter so it cannot wrap.
+pub fn record_failure(state: &SharedState, ip: &str, max_tries: u32) -> bool {
+    let mut st = lock_write(state);
+    let entry = st.failures.entry(ip.to_string()).or_insert(0);
+    *entry = entry.saturating_add(1).min(max_tries);
+    is_rate_limited(*entry, max_tries)
+}
+
+/// True when `attempts` reached the configured kick threshold.
+fn is_rate_limited(attempts: u32, max_tries: u32) -> bool {
+    attempts >= max_tries
+}
+
+/// Kicks the player with the rate-limit message and cleans up join bookkeeping.
+/// Returns true if the player was kicked.
+pub fn kick_rate_limited(player: &Player, state: &SharedState, normalized: &str) -> bool {
+    if let Some(java) = player.as_java() {
+        java.kick(JavaKickOptions::new(TextComponent::text(msg(
+            "login.rate_limited",
+        ))));
+    } else if let Some(bedrock) = player.as_bedrock() {
+        bedrock.kick(&pumpkin_plugin_api::player::BedrockKickOptions::new(
+            pumpkin_plugin_api::player::BedrockDisconnectReason::Kicked,
+            msg("login.rate_limited"),
+        ));
+    } else {
+        return false;
+    }
+    let mut st = lock_write(state);
+    st.joined_at.remove(normalized);
+    st.authed.remove(normalized);
+    true
 }
 
 /// Marks the player as authenticated and clears their login-timeout bookkeeping.
@@ -125,6 +180,15 @@ fn is_command_allowed(command: &str) -> bool {
 pub fn register_handlers(context: &Context, state: SharedState) -> Result<(), String> {
     context
         .register_event_handler(
+            PreLoginHandler {
+                state: state.clone(),
+            },
+            EventPriority::Normal,
+            true,
+        )
+        .map_err(|e| format!("gln-auth: failed to register pre-login handler: {e}"))?;
+    context
+        .register_event_handler(
             JoinHandler {
                 state: state.clone(),
             },
@@ -169,6 +233,28 @@ pub fn register_handlers(context: &Context, state: SharedState) -> Result<(), St
     Ok(())
 }
 
+pub struct PreLoginHandler {
+    pub state: SharedState,
+}
+
+impl EventHandler<PlayerPreLoginEvent> for PreLoginHandler {
+    /// Single-session rule: deny a second simultaneous join with the same
+    /// name while the first is authenticated. Runs before a Player handle
+    /// exists, so the new connection is cancelled here with a kick message.
+    fn handle(&self, _server: Server, mut data: PlayerPreLoginEventData) -> PlayerPreLoginEventData {
+        let normalized = normalize_name(&data.player_name);
+        if is_authed(&self.state, &normalized) {
+            tracing::warn!(
+                "gln-auth: denied duplicate join for {normalized} from {}",
+                data.ip_address
+            );
+            data.cancelled = true;
+            data.kick_message = TextComponent::text(msg("login.duplicate"));
+        }
+        data
+    }
+}
+
 pub struct JoinHandler {
     pub state: SharedState,
 }
@@ -180,12 +266,14 @@ impl EventHandler<PlayerJoinEvent> for JoinHandler {
         let ip = data.player.get_ip();
 
         // Account lookup; store errors fail closed (treat as unauthenticated).
-        let lookup = lock_read(&self.state).store.get_account(&normalized);
-        let account = match lookup {
-            Ok(account) => account,
+        // The account-existence tri-state drives both auto-login checks and
+        // the final prompt: Unknown prompts /login, never /register.
+        let (account, status) = match lock_read(&self.state).store.get_account(&normalized) {
+            Ok(Some(a)) => (Some(a), AccountStatus::Exists),
+            Ok(None) => (None, AccountStatus::Missing),
             Err(e) => {
                 tracing::error!("gln-auth: join lookup failed for {normalized}: {e}");
-                None
+                (None, AccountStatus::Unknown)
             }
         };
 
@@ -242,13 +330,8 @@ impl EventHandler<PlayerJoinEvent> for JoinHandler {
             st.joined_at.insert(normalized.clone(), now_secs());
             st.authed.remove(&normalized);
         }
-        if account.is_some() {
-            data.player
-                .send_system_message(TextComponent::text(msg("join.login")), false);
-        } else {
-            data.player
-                .send_system_message(TextComponent::text(msg("join.register")), false);
-        }
+        data.player
+            .send_system_message(TextComponent::text(msg(join_prompt_key(status))), false);
         data
     }
 }
@@ -340,9 +423,11 @@ pub struct LeaveHandler {
 impl EventHandler<PlayerLeaveEvent> for LeaveHandler {
     fn handle(&self, _server: Server, data: PlayerLeaveEventData) -> PlayerLeaveEventData {
         let normalized = normalize_name(&data.player.get_name());
+        let ip = data.player.get_ip();
         {
             let mut st = lock_write(&self.state);
             st.joined_at.remove(&normalized);
+            st.failures.remove(&ip);
         }
         mark_unauthed(&self.state, &normalized);
         // The session row is kept on purpose so a relog within the window resumes.
@@ -425,6 +510,25 @@ mod tests {
         assert!(set.contains("steve"));
         set.remove("steve");
         assert!(!set.contains("steve"));
+    }
+
+    /// Unknown account existence (store error) must prompt /login, not
+    /// /register: prompting register on a store error points an existing
+    /// account at the wrong command. Missing -> register, Exists -> login.
+    #[test]
+    fn join_prompt_falls_back_to_login_when_account_unknown() {
+        assert_eq!(join_prompt_key(AccountStatus::Missing), "join.register");
+        assert_eq!(join_prompt_key(AccountStatus::Exists), "join.login");
+        assert_eq!(join_prompt_key(AccountStatus::Unknown), "join.login");
+    }
+
+    /// The kick boundary: exactly max_login_tries failures kicks; one below
+    /// does not; already-above still kicks (lowering the cap mid-flight).
+    #[test]
+    fn rate_limit_kicks_at_or_beyond_max_tries() {
+        assert!(!is_rate_limited(4, 5));
+        assert!(is_rate_limited(5, 5));
+        assert!(is_rate_limited(6, 5));
     }
 
     #[test]

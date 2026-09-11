@@ -1,0 +1,41 @@
+# gln-auth example configuration.
+#
+# On first start the plugin writes a fresh copy of this file (with these
+# same defaults) to <server>/plugins/gln-auth/config.toml. Edit THAT copy
+# and restart the server; this repo copy is only a reference example.
+
+# Seconds an unauthenticated player may stay on the server before being
+# kicked. While unauthenticated the player is frozen (no move/chat/commands
+# except auth commands). Default: 120.
+timeout_secs = 120
+
+# Minutes a successful login is remembered. Rejoining from the same IP
+# within this window silently resumes the session (no /login needed).
+# Default: 120.
+session_minutes = 120
+
+# Failed /login attempts from one IP before that player is kicked with the
+# rate-limit message. The counter resets on a successful login and when the
+# player leaves. Default: 5.
+max_login_tries = 5
+
+# Minimum and maximum password length (in bytes). Default: 8 and 64.
+pw_min_len = 8
+pw_max_len = 64
+
+# Regex new player names must match. Kept in sync with Minecraft's default
+# name rules (3-16 chars, letters/digits/underscore). Default shown.
+name_regex = '^[a-zA-Z0-9_]{3,16}$'
+
+# Whether the plugin asks Mojang's session servers whether a joining name
+# belongs to a premium (paid) account. Requires the http.outbound plugin
+# permission and outbound internet access from the server host. Premium
+# players are auto-logged-in. Default: true.
+premium_check_enabled = true
+
+# How long a premium/cracked verdict from Mojang is cached (minutes), to
+# avoid hammering the API on relogs. Default: 45.
+premium_cache_minutes = 45
+
+# NOTE: all player-facing messages are compiled into the plugin and are
+# NOT configurable in v1; there is intentionally no [messages] section.

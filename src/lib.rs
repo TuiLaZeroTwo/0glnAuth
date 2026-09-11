@@ -65,7 +65,13 @@ impl Plugin for GlnAuth {
                 config_path.display()
             );
         }
-        let cfg = load_config(config_path.to_str().unwrap_or("config.toml"));
+        let config_str = config_path.to_str().ok_or_else(|| {
+            format!(
+                "gln-auth: config path {} is not valid unicode",
+                config_path.display()
+            )
+        })?;
+        let cfg = load_config(config_str)?;
 
         let store_path = Path::new(&data_folder).join("gln-auth.json");
         let store = crate::storage::AuthStore::open(store_path.to_str().ok_or_else(|| {

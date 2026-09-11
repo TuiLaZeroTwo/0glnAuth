@@ -298,17 +298,11 @@ impl CommandHandler for LoginHandler {
         };
 
         if !verify_password(&account.hash, &password) {
-            let attempts = {
-                let mut st = lock_write(&self.state);
-                let entry = st.failures.entry(ip.clone()).or_insert(0);
-                *entry += 1;
-                *entry
-            };
             reply_err(&sender, msg("login.wrong"));
             let cfg = cfg_of(&self.state);
-            if attempts >= cfg.max_login_tries {
-                tracing::warn!("gln-auth: ip {ip} reached {attempts} failed login attempts");
-                reply_err(&sender, "Too many failed login attempts.");
+            if crate::handlers::record_failure(&self.state, &ip, cfg.max_login_tries) {
+                tracing::warn!("gln-auth: ip {ip} kicked after {} failed logins", cfg.max_login_tries);
+                crate::handlers::kick_rate_limited(&player, &self.state, &normalized);
             }
             return Ok(1);
         }

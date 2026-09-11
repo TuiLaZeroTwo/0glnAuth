@@ -15,10 +15,55 @@ const PROFILE_URLS: [&str; 2] = [
     "https://api.mojang.com/users/profiles/minecraft/",
 ];
 
-/// Total attempts across transport errors and 429s.
+/// Total attempts SHARED across both endpoints and all failure categories.
+/// Worst case join block: 3 fetches x 5s connect timeout + backoff.
 const MAX_ATTEMPTS: u32 = 3;
 /// Backoff between attempts.
 const RETRY_DELAY_MS: u64 = 500;
+
+/// What a completed fetch tells the plan.
+#[derive(Debug, PartialEq, Eq)]
+pub enum FetchOutcome {
+    /// 200 without a parsable id: give up on this endpoint, try the next.
+    NextEndpoint,
+    /// 429 / unexpected status / transport error: retry the same endpoint.
+    RetrySame,
+}
+
+/// Shared attempt budget across the endpoint list. `next()` returns the
+/// endpoint index to fetch or None when the budget is spent.
+pub struct FetchPlan {
+    budget: u32,
+    spent: u32,
+    endpoint: usize,
+}
+
+impl FetchPlan {
+    pub fn new(budget: u32) -> Self {
+        Self {
+            budget,
+            spent: 0,
+            endpoint: 0,
+        }
+    }
+
+    fn next(&self) -> Option<usize> {
+        if self.spent >= self.budget {
+            return None;
+        }
+        if self.endpoint >= PROFILE_URLS.len() {
+            return None;
+        }
+        Some(self.endpoint)
+    }
+
+    fn record(&mut self, outcome: FetchOutcome) {
+        self.spent += 1;
+        if outcome == FetchOutcome::NextEndpoint {
+            self.endpoint += 1;
+        }
+    }
+}
 
 pub struct PremiumCache {
     ttl: u64,
@@ -85,29 +130,40 @@ fn fetch_once(url: &str) -> Result<(u16, String), String> {
 
 /// Live premium lookup. `Ok((true, Some(uuid)))` = premium, `Ok((false, None))`
 /// = cracked, `Err` = transport failure (caller must fail closed, no caching).
+///
+/// One attempt budget is shared across BOTH endpoints: at most
+/// `MAX_ATTEMPTS` fetches happen per lookup, then the lookup fails closed.
 pub fn resolve_premium(name: &str) -> Result<(bool, Option<String>), String> {
     let mut last_err = String::new();
-    'urls: for url in PROFILE_URLS {
-        let mut attempts = 0;
-        loop {
-            attempts += 1;
-            match fetch_once(&format!("{url}{name}")) {
-                Ok((200, body)) => {
+    let mut plan = FetchPlan::new(MAX_ATTEMPTS);
+    while let Some(endpoint) = plan.next() {
+        let url = &PROFILE_URLS[endpoint];
+        let outcome = match fetch_once(&format!("{url}{name}")) {
+            Ok((200, body)) => {
+                if let Some(id) = parse_mojang_profile_response(200, &body) {
                     tracing::debug!("gln-auth: premium fetch ok via {url} for {name}");
-                    if let Some(id) = parse_mojang_profile_response(200, &body) {
-                        return Ok((true, Some(id)));
-                    }
-                    // 200 without a parsable id: fall through to the next endpoint.
-                    continue 'urls;
+                    return Ok((true, Some(id)));
                 }
-                Ok((204 | 404, _)) => return Ok((false, None)),
-                Ok((429, _)) => last_err = format!("{url}: rate limited (429)"),
-                Ok((status, _)) => last_err = format!("{url}: unexpected status {status}"),
-                Err(e) => last_err = e,
+                // 200 without a parsable id: fall through to the next endpoint.
+                FetchOutcome::NextEndpoint
             }
-            if attempts >= MAX_ATTEMPTS {
-                continue 'urls;
+            Ok((204 | 404, _)) => return Ok((false, None)),
+            Ok((429, _)) => {
+                last_err = format!("{url}: rate limited (429)");
+                FetchOutcome::RetrySame
             }
+            Ok((status, _)) => {
+                last_err = format!("{url}: unexpected status {status}");
+                FetchOutcome::RetrySame
+            }
+            Err(e) => {
+                last_err = e;
+                FetchOutcome::RetrySame
+            }
+        };
+        let retrying = outcome == FetchOutcome::RetrySame;
+        plan.record(outcome);
+        if retrying && plan.next().is_some() {
             std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS));
         }
     }
@@ -130,6 +186,47 @@ mod tests {
         assert_eq!(parse_mojang_profile_response(204, ""), None);
         assert_eq!(parse_mojang_profile_response(429, ""), None);
         assert_eq!(parse_mojang_profile_response(500, "{}"), None);
+    }
+
+    /// The fetch plan shares one attempt budget across BOTH endpoints: a
+    /// regression to per-endpoint counters would plan a 4th fetch here.
+    #[test]
+    fn fetch_plan_caps_total_attempts_across_endpoints() {
+        let mut plan = FetchPlan::new(MAX_ATTEMPTS);
+        for _ in 0..MAX_ATTEMPTS {
+            assert_eq!(plan.next(), Some(0), "budget not yet spent");
+            plan.record(FetchOutcome::RetrySame);
+        }
+        // All 3 attempts went to endpoint 0: endpoint 1 is never reached.
+        assert_eq!(plan.next(), None);
+    }
+
+    /// A 200-without-id response is terminal for the endpoint: the plan moves
+    /// on without waiting, spending one attempt each.
+    #[test]
+    fn fetch_plan_moves_to_next_endpoint_on_next_endpoint_outcome() {
+        let mut plan = FetchPlan::new(MAX_ATTEMPTS);
+        assert_eq!(plan.next(), Some(0));
+        plan.record(FetchOutcome::NextEndpoint);
+        assert_eq!(plan.next(), Some(1));
+        plan.record(FetchOutcome::NextEndpoint);
+        // There is no third endpoint.
+        assert_eq!(plan.next(), None);
+    }
+
+    /// Mixed outcomes still share the budget: 1 (next-endpoint) + 2 (retries)
+    /// = 3 total, and the plan ends on the endpoint it was retrying.
+    #[test]
+    fn fetch_plan_exhausts_shared_budget_on_mixed_outcomes() {
+        let mut plan = FetchPlan::new(3);
+        assert_eq!(plan.next(), Some(0));
+        plan.record(FetchOutcome::NextEndpoint);
+        assert_eq!(plan.next(), Some(1));
+        plan.record(FetchOutcome::RetrySame);
+        assert_eq!(plan.next(), Some(1));
+        plan.record(FetchOutcome::NextEndpoint);
+        // Third attempt spent moving past endpoint 1: nothing left.
+        assert_eq!(plan.next(), None);
     }
 
     #[test]
