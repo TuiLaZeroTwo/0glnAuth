@@ -1,5 +1,6 @@
 mod config;
 mod messages;
+mod validation;
 
 use pumpkin_plugin_api::{Context, Plugin, PluginMetadata};
 use tracing::info;
