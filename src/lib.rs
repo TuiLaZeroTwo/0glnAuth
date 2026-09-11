@@ -1,6 +1,7 @@
 mod config;
 mod hash;
 mod messages;
+mod session;
 mod storage;
 mod validation;
 
