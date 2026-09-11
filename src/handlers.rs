@@ -52,9 +52,11 @@ pub fn is_authed(state: &SharedState, normalized: &str) -> bool {
     lock_read(state).authed.contains(normalized)
 }
 
-/// Marks the player as authenticated.
+/// Marks the player as authenticated and clears their login-timeout bookkeeping.
 pub fn mark_authed(state: &SharedState, normalized: &str) {
-    lock_write(state).authed.insert(normalized.to_string());
+    let mut st = lock_write(state);
+    st.authed.insert(normalized.to_string());
+    st.joined_at.remove(normalized);
 }
 
 /// Marks the player as unauthenticated.
@@ -89,12 +91,14 @@ fn kick_timeout(player: &Player, state: &SharedState, normalized: &str) -> bool 
 /// Runs the timeout sweep for a player: kicks them if they exceeded the login
 /// timeout. Returns true when the player was kicked.
 fn timeout_sweep(player: &Player, state: &SharedState, normalized: &str) -> bool {
-    let (joined_at, timeout_secs) = {
+    let lookup = {
         let st = lock_read(state);
-        match st.joined_at.get(normalized) {
-            Some(t) => (*t, st.cfg.timeout_secs),
-            None => return false,
-        }
+        st.joined_at
+            .get(normalized)
+            .map(|t| (*t, st.cfg.timeout_secs))
+    };
+    let Some((joined_at, timeout_secs)) = lookup else {
+        return false;
     };
     if is_timed_out(joined_at, now_secs(), timeout_secs) {
         kick_timeout(player, state, normalized)
@@ -174,7 +178,8 @@ impl EventHandler<PlayerJoinEvent> for JoinHandler {
         let ip = data.player.get_ip();
 
         // Account lookup; store errors fail closed (treat as unauthenticated).
-        let account = match lock_read(&self.state).store.get_account(&normalized) {
+        let lookup = lock_read(&self.state).store.get_account(&normalized);
+        let account = match lookup {
             Ok(account) => account,
             Err(e) => {
                 tracing::error!("gln-auth: join lookup failed for {normalized}: {e}");
@@ -192,7 +197,8 @@ impl EventHandler<PlayerJoinEvent> for JoinHandler {
 
         // Session resume: valid expiry AND matching IP, no new session write.
         if account.is_some() {
-            let resumed = match lock_read(&self.state).store.get_session(&normalized) {
+            let sess = lock_read(&self.state).store.get_session(&normalized);
+            let resumed = match sess {
                 Ok(Some(session)) => is_session_valid(&session, now_secs(), &ip),
                 Ok(None) => false,
                 Err(e) => {
