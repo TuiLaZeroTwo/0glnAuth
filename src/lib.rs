@@ -1,6 +1,7 @@
 mod config;
 mod hash;
 mod messages;
+mod storage;
 mod validation;
 
 use pumpkin_plugin_api::{Context, Plugin, PluginMetadata};
