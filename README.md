@@ -1,11 +1,11 @@
 # gln-auth
 
-A Pumpkin (WASM) authentication plugin for offline-mode Minecraft servers: it
-auto-logs-in premium (paid) accounts by verifying their names against Mojang's
-session servers, and gives cracked (non-premium) players a classic
-register/login password flow with session memory, an unauthenticated freeze,
-and a login timeout. One active session per player name, per-IP rate limiting,
-and Argon2 password hashing are built in.
+A Pumpkin (WASM) authentication plugin for offline-mode Minecraft servers:
+premium (paid) players claim their name once with `/premium` (verified
+against Mojang's session servers), cracked (non-premium) players get a
+classic register/login password flow with session memory, an
+unauthenticated freeze, and a login timeout. One active session per player
+name, per-IP rate limiting, and Argon2 password hashing are built in.
 
 ## Requirements
 
@@ -51,25 +51,42 @@ All keys live in `plugins/gln-auth/config.toml` (TOML). The repo copy at
 | `pw_min_len`           | 8       | Minimum password length. |
 | `pw_max_len`           | 64      | Maximum password length. |
 | `name_regex`           | `^[a-zA-Z0-9_]{3,16}$` | Regex new names must match. |
-| `premium_check_enabled`| true    | Ask Mojang whether joining names are premium; auto-login if so. |
+| `premium_check_enabled`| true    | Whether `/premium` may ask Mojang to verify names. |
 | `premium_cache_minutes`| 45      | TTL for cached premium/cracked verdicts. |
+| `messages`             | see file | `[messages]` section: override any player-facing message text. |
 
-Messages are compiled into the plugin and are **not** configurable in v1
-(there is no `[messages]` section).
+### Custom messages
+
+Every player-facing message can be reworded in the `[messages]` section of
+`config.toml` (quoted keys, because they contain dots):
+
+```toml
+[messages]
+"login.wrong" = "Falsches Passwort."
+```
+
+Keys you omit keep their built-in default; unknown keys are ignored, so an
+old config keeps working across plugin updates. The full default table is
+listed in the generated `config.toml`.
 
 ## Commands
 
 | Command | Args | Who can run | Effect |
 |---------|------|-------------|--------|
-| `/register` | `<password> <confirm>` | everyone | Create an account and log in. |
+| `/register` | `<password> <confirm>` | everyone | Create a cracked account and log in. |
 | `/login` | `<password>` | everyone | Log in (resets the failure counter on success). |
+| `/premium` | — | everyone | Verify this name as premium with Mojang, create the account, and log in. Rejected if any account already exists for the name. |
 | `/logout` | — | everyone | Log out; the next join asks for `/login` again. |
 | `/changepassword` | `<old> <new>` | everyone (must be logged in) | Change the account password. |
 | `/unregister` | `<password>` | everyone (must be logged in) | Delete the account. |
-| `/setpremium` | `<name> <on\|off>` | ops (level 3+) | Force the premium flag of an account. |
+| `/setpremium` | `<name> <on\|off>` | ops (level 3+) | Force the premium flag of an account. `off` is rejected on an account with no password. |
 | `/forcelogin` | `<name>` | ops (level 3+) | Mark an account as logged in now. |
 
 Short aliases: `/l` and `/log` work like `/login`.
+
+Admin recovery note: an account that is stuck (e.g. a premium player whose
+Mojang name was released) can be brought back with `/forcelogin <name>`
+followed by `/changepassword` while logged in.
 
 ## How auth works
 
@@ -77,54 +94,79 @@ On every join the plugin runs this flow:
 
 1. **Stored premium flag** — an account with a stored `premium_id` is
    auto-authenticated immediately.
-2. **Live premium check** — otherwise (if `premium_check_enabled`) the name
-   is checked against Mojang's session servers (cached for
-   `premium_cache_minutes`). A premium verdict is stored and auto-logins.
-   Up to 3 HTTP attempts total are made; on total failure the check is
-   skipped (fail-closed: the player is treated as cracked).
-3. **Session resume** — a stored session that is unexpired AND from the same
+2. **Session resume** — a stored session that is unexpired AND from the same
    IP silently resumes (no prompt).
-4. **Prompt** — otherwise the player is prompted to `/register` (no account)
-   or `/login` (account exists, or account status unknown due to a store
-   error — fail-closed) and is **frozen**: no movement, no chat, no commands
-   except the auth commands above.
-5. **Timeout** — a still-unauthenticated player is kicked with "Login
+3. **Prompt (chat-choice)** — otherwise the player is unauthenticated and
+   **frozen** (no movement, chat, block interaction, item drops, attacks,
+   or commands except the auth commands above):
+   - no account → "Are you premium or cracked?" — use `/premium` to verify
+     a premium name against Mojang (up to 3 HTTP attempts, 5s connect
+     timeout), or `/register` to create a cracked account,
+   - account exists (or account status unknown due to a store error —
+     fail-closed) → prompted to `/login`.
+4. **Timeout** — a still-unauthenticated player is kicked with "Login
    timeout." after `timeout_secs` (default 120s) on their next action.
+
+There is deliberately **no join-time premium auto-resolution**: a premium
+name is only ever claimed through the explicit `/premium` command, so an
+existing password account can never be silently converted (an `/premium`
+claim on an existing name is rejected with "account already exists").
 
 Additional rules:
 
-- **Single session**: while a name is authenticated, a second join with the
-  same name is denied at pre-login with "Already logged in from another
-  session."
+- **Single session**: while a name has a live session — authenticated OR
+  still frozen/unauthenticated — a second join with the same name is denied
+  at pre-login with "Already logged in from another session."
 - **Rate limit**: after `max_login_tries` wrong passwords from one IP the
   player is kicked with "Too many failed login attempts." The counter resets
-  on a successful login and when the player leaves.
+  ONLY on a successful login — reconnecting does not reset it.
 - Passwords are hashed with Argon2; sessions are pinned to the last login IP.
 
 ## Acceptance checklist
 
 Manual, against a live Pumpkin server (offline mode):
 
-- [ ] 1. **Cracked register**: join with a new name → prompted to register →
-  `/register <pw> <pw>` → authenticated, unfrozen.
+- [ ] 1. **Cracked register**: join with a new name → prompted with the
+  premium-or-cracked choice → `/register <pw> <pw>` → authenticated,
+  unfrozen.
 - [ ] 2. **Cracked login + relog**: leave, rejoin → prompted → `/login <pw>`
   → authenticated. Rejoin within 120 min from the same IP → session resumed
   silently.
 - [ ] 3. **Wrong password**: `/login <wrong>` 5× → kicked (rate limit
-  message).
+  message). Reconnect immediately → the counter is still spent (kicked
+  again after 0 more failures), only a successful login clears it.
 - [ ] 4. **Timeout**: join, do nothing → frozen; after 120s + any movement
   attempt → kicked with the timeout message.
-- [ ] 5. **Premium auto-login**: join with a premium-verified name (e.g.
-  one marked via `/setpremium <name> on`, or a real Mojang-owned name on a
-  networked host) → auto logged in with the premium message.
-- [ ] 6. **Single session**: authenticate in client A, join with the same
-  name in client B → B denied with the duplicate-session message.
+- [ ] 5. **Premium claim**: join with a fresh premium name → choice prompt →
+  `/premium` → verified → premium welcome, unfrozen. Join again →
+  auto-login via the stored premium flag.
+- [ ] 6. **/premium on a non-premium name**: rejected with "That name is
+  not premium, use /register."
+- [ ] 7. **/premium with an existing account**: rejected with "account
+  already exists, use /login" — the password account is never converted.
+- [ ] 8. **Single session**: authenticate in client A, join with the same
+  name in client B → B denied with the duplicate-session message. Also
+  while A is still frozen (unauthenticated), B is denied.
+- [ ] 9. **Freeze blocks interaction**: while unauthenticated, breaking a
+  block, placing a block, right-clicking, dropping an item, and hitting a
+  mob are all blocked; after `/login` they all work.
+- [ ] 10. **Custom message**: put `"login.wrong" = "test"` in `[messages]`,
+  restart, `/login <wrong>` → "test" shown; remove it → default text.
 
 ## Limitations
 
+- **WARNING — if gln-auth fails to load, the server runs WITHOUT auth.**
+  When the plugin's load fails (corrupt `gln-auth.json` store, malformed
+  `config.toml`, denied permissions), Pumpkin disables the plugin, logs an
+  error, and keeps the server running. In offline mode that means anyone
+  can join as any name. Fix the storage/config and confirm `gln-auth` shows
+  up in `/plugins` before opening the server to players.
+- Residual risk (accepted by the owner): a `/premium` claim can capture an
+  unregistered stranger's premium name — the first person to run
+  `/premium` with a premium-verified name owns it on this server.
 - The JSON flatfile store (`gln-auth.json`) is not safe for concurrent
   servers sharing a plugin directory — single server per store only.
 - No email or 2FA in v1.
 - The Mojang premium check requires the `http.outbound` plugin permission
-  and network access; without it every player is treated as cracked
-  (fail-closed, never fails-open).
+  and network access; without it `/premium` always fails closed with "Could
+  not verify premium status, try again later."

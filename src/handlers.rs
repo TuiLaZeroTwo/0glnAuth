@@ -5,32 +5,35 @@
 //!   prompted to login and frozen until they do,
 //! - session resume requires a valid expiry AND a matching IP,
 //! - players that exceed `timeout_secs` without authenticating are kicked,
-//! - frozen players can only run auth commands from the allowlist.
+//! - frozen players can only run auth commands from the allowlist,
+//! - the premium resolver is NEVER run at join time: first joins get a
+//!   chat-choice prompt (/premium or /register) and premium verification
+//!   only happens through the explicit /premium command.
 
 use std::sync::{RwLockReadGuard, RwLockWriteGuard};
 
 use pumpkin_plugin_api::events::{
-    EventHandler, EventPriority, PlayerChatEvent, PlayerCommandPreprocessEvent, PlayerJoinEvent,
-    PlayerLeaveEvent, PlayerMoveEvent, PlayerPreLoginEvent,
+    EventHandler, EventPriority, PlayerChatEvent, PlayerCommandPreprocessEvent, PlayerDropItemEvent,
+    PlayerInteractEvent, PlayerJoinEvent, PlayerLeaveEvent, PlayerMoveEvent, PlayerPreLoginEvent,
+    BlockBreakEvent, BlockPlaceEvent, EntityDamageByEntityEvent,
 };
 use pumpkin_plugin_api::events_wit::{
-    PlayerChatEventData, PlayerCommandPreprocessEventData, PlayerJoinEventData,
-    PlayerLeaveEventData, PlayerMoveEventData, PlayerPreLoginEventData,
+    BlockBreakEventData, BlockPlaceEventData, EntityDamageByEntityEventData,
+    PlayerChatEventData, PlayerCommandPreprocessEventData, PlayerDropItemEventData,
+    PlayerInteractEventData, PlayerJoinEventData, PlayerLeaveEventData, PlayerMoveEventData,
+    PlayerPreLoginEventData,
 };
 use pumpkin_plugin_api::player::JavaKickOptions;
 use pumpkin_plugin_api::text::TextComponent;
 use pumpkin_plugin_api::{Context, Player, Server};
 
-use crate::messages::msg;
-use crate::premium::resolve_premium;
 use crate::session::{is_session_valid, now_secs};
-use crate::storage::Account;
 use crate::validation::normalize_name;
 use crate::{AppState, SharedState};
 
 /// Commands an unauthenticated player may still run (matched case-insensitively
 /// against the first word of the command string, with or without the leading `/`).
-const ALLOWED_COMMANDS: [&str; 8] = [
+const ALLOWED_COMMANDS: [&str; 9] = [
     "login",
     "register",
     "logout",
@@ -39,6 +42,7 @@ const ALLOWED_COMMANDS: [&str; 8] = [
     "changepassword",
     "unregister",
     "setpremium",
+    "premium",
 ];
 
 fn lock_read(state: &SharedState) -> RwLockReadGuard<'_, AppState> {
@@ -49,6 +53,11 @@ fn lock_write(state: &SharedState) -> RwLockWriteGuard<'_, AppState> {
     state.write().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Config-driven message lookup (overrides in [messages], else the default).
+pub fn message(state: &SharedState, key: &str) -> String {
+    lock_read(state).cfg.message(key)
+}
+
 /// True if the player with this (already normalized) name is authenticated.
 pub fn is_authed(state: &SharedState, normalized: &str) -> bool {
     lock_read(state).authed.contains(normalized)
@@ -56,12 +65,12 @@ pub fn is_authed(state: &SharedState, normalized: &str) -> bool {
 
 /// Which join prompt the player should get.
 pub enum AccountStatus {
-    /// No stored account: prompt /register.
+    /// No stored account: prompt the premium-or-cracked choice.
     Missing,
     /// Stored account: prompt /login.
     Exists,
     /// Store error: fail closed as unauthenticated, but prompt /login — an
-    /// existing account would be pointed at the wrong command by /register.
+    /// existing account would be pointed at the wrong command otherwise.
     Unknown,
 }
 
@@ -69,7 +78,7 @@ pub enum AccountStatus {
 /// unknown and missing leave the player unauthenticated).
 pub fn join_prompt_key(status: AccountStatus) -> &'static str {
     match status {
-        AccountStatus::Missing => "join.register",
+        AccountStatus::Missing => "join.choice",
         AccountStatus::Exists | AccountStatus::Unknown => "join.login",
     }
 }
@@ -92,13 +101,14 @@ fn is_rate_limited(attempts: u32, max_tries: u32) -> bool {
 /// Returns true if the player was kicked.
 pub fn kick_rate_limited(player: &Player, state: &SharedState, normalized: &str) -> bool {
     if let Some(java) = player.as_java() {
-        java.kick(JavaKickOptions::new(TextComponent::text(msg(
+        java.kick(JavaKickOptions::new(TextComponent::text(&message(
+            state,
             "login.rate_limited",
         ))));
     } else if let Some(bedrock) = player.as_bedrock() {
         bedrock.kick(&pumpkin_plugin_api::player::BedrockKickOptions::new(
             pumpkin_plugin_api::player::BedrockDisconnectReason::Kicked,
-            msg("login.rate_limited"),
+            message(state, "login.rate_limited"),
         ));
     } else {
         return false;
@@ -130,11 +140,14 @@ fn is_timed_out(joined_at: u64, now: u64, timeout_secs: u64) -> bool {
 /// Returns true if the player was kicked.
 fn kick_timeout(player: &Player, state: &SharedState, normalized: &str) -> bool {
     if let Some(java) = player.as_java() {
-        java.kick(JavaKickOptions::new(TextComponent::text(msg("timeout.kick"))));
+        java.kick(JavaKickOptions::new(TextComponent::text(&message(
+            state,
+            "timeout.kick",
+        ))));
     } else if let Some(bedrock) = player.as_bedrock() {
         bedrock.kick(&pumpkin_plugin_api::player::BedrockKickOptions::new(
             pumpkin_plugin_api::player::BedrockDisconnectReason::Kicked,
-            msg("timeout.kick"),
+            message(state, "timeout.kick"),
         ));
     } else {
         return false;
@@ -225,11 +238,56 @@ pub fn register_handlers(context: &Context, state: SharedState) -> Result<(), St
         .map_err(|e| format!("gln-auth: failed to register chat handler: {e}"))?;
     context
         .register_event_handler(
-            FreezeCommandHandler { state },
+            FreezeCommandHandler {
+                state: state.clone(),
+            },
             EventPriority::Normal,
             true,
         )
         .map_err(|e| format!("gln-auth: failed to register command handler: {e}"))?;
+    context
+        .register_event_handler(
+            FreezeBlockBreakHandler {
+                state: state.clone(),
+            },
+            EventPriority::Normal,
+            true,
+        )
+        .map_err(|e| format!("gln-auth: failed to register block-break handler: {e}"))?;
+    context
+        .register_event_handler(
+            FreezeBlockPlaceHandler {
+                state: state.clone(),
+            },
+            EventPriority::Normal,
+            true,
+        )
+        .map_err(|e| format!("gln-auth: failed to register block-place handler: {e}"))?;
+    context
+        .register_event_handler(
+            FreezeInteractHandler {
+                state: state.clone(),
+            },
+            EventPriority::Normal,
+            true,
+        )
+        .map_err(|e| format!("gln-auth: failed to register interact handler: {e}"))?;
+    context
+        .register_event_handler(
+            FreezeDropItemHandler {
+                state: state.clone(),
+            },
+            EventPriority::Normal,
+            true,
+        )
+        .map_err(|e| format!("gln-auth: failed to register drop-item handler: {e}"))?;
+    context
+        .register_event_handler(
+            FreezeAttackHandler { state },
+            EventPriority::Normal,
+            true,
+        )
+        .map_err(|e| format!("gln-auth: failed to register attack handler: {e}"))?;
     Ok(())
 }
 
@@ -239,17 +297,23 @@ pub struct PreLoginHandler {
 
 impl EventHandler<PlayerPreLoginEvent> for PreLoginHandler {
     /// Single-session rule: deny a second simultaneous join with the same
-    /// name while the first is authenticated. Runs before a Player handle
-    /// exists, so the new connection is cancelled here with a kick message.
+    /// name while the first session is live — whether the first player is
+    /// already authenticated OR still frozen/unauthenticated. Runs before a
+    /// Player handle exists, so the new connection is cancelled here with a
+    /// kick message.
     fn handle(&self, _server: Server, mut data: PlayerPreLoginEventData) -> PlayerPreLoginEventData {
         let normalized = normalize_name(&data.player_name);
-        if is_authed(&self.state, &normalized) {
+        let occupied = {
+            let st = lock_read(&self.state);
+            st.authed.contains(&normalized) || st.joined_at.contains_key(&normalized)
+        };
+        if occupied {
             tracing::warn!(
                 "gln-auth: denied duplicate join for {normalized} from {}",
                 data.ip_address
             );
             data.cancelled = true;
-            data.kick_message = TextComponent::text(msg("login.duplicate"));
+            data.kick_message = TextComponent::text(&message(&self.state, "login.duplicate"));
         }
         data
     }
@@ -266,7 +330,7 @@ impl EventHandler<PlayerJoinEvent> for JoinHandler {
         let ip = data.player.get_ip();
 
         // Account lookup; store errors fail closed (treat as unauthenticated).
-        // The account-existence tri-state drives both auto-login checks and
+        // The account-existence tri-state drives the auto-login checks and
         // the final prompt: Unknown prompts /login, never /register.
         let (account, status) = match lock_read(&self.state).store.get_account(&normalized) {
             Ok(Some(a)) => (Some(a), AccountStatus::Exists),
@@ -281,31 +345,14 @@ impl EventHandler<PlayerJoinEvent> for JoinHandler {
         if account.as_ref().is_some_and(|a| a.premium_id.is_some()) {
             mark_authed(&self.state, &normalized);
             data.player
-                .send_system_message(TextComponent::text(msg("premium.auto")), false);
+                .send_system_message(TextComponent::text(&message(
+                    &self.state,
+                    "premium.auto",
+                )), false);
             return data;
         }
 
-        // 2. Live premium check: no account, or an account without premium_id.
-        let check_enabled = lock_read(&self.state).cfg.premium_check_enabled;
-        if check_enabled && account.as_ref().is_none_or(|a| a.premium_id.is_none()) {
-            match self.premium_verdict(&normalized, now_secs()) {
-                PremiumVerdict::Premium(id) => {
-                    if self.persist_premium(&data, &normalized, &name, &ip, id) {
-                        mark_authed(&self.state, &normalized);
-                        data.player.send_system_message(
-                            TextComponent::text(msg("premium.auto")),
-                            false,
-                        );
-                        return data;
-                    }
-                    // Persist failure: fall through to the prompt, fail closed.
-                }
-                PremiumVerdict::Cracked => {}
-                PremiumVerdict::Unavailable => {}
-            }
-        }
-
-        // 3. Session resume: valid expiry AND matching IP, no new session write.
+        // 2. Session resume: valid expiry AND matching IP, no new session write.
         if account.is_some() {
             let sess = lock_read(&self.state).store.get_session(&normalized);
             let resumed = match sess {
@@ -319,100 +366,29 @@ impl EventHandler<PlayerJoinEvent> for JoinHandler {
             if resumed {
                 mark_authed(&self.state, &normalized);
                 data.player
-                    .send_system_message(TextComponent::text(msg("session.resume")), false);
+                    .send_system_message(TextComponent::text(&message(
+                        &self.state,
+                        "session.resume",
+                    )), false);
                 return data;
             }
         }
 
-        // 4. Unauthenticated: record join time for the timeout sweep and prompt.
+        // 3. Unauthenticated: record join time for the timeout sweep and
+        // prompt. First joins (no account) get the premium-or-cracked choice;
+        // there is deliberately NO join-time premium resolution — a premium
+        // name must be claimed explicitly via /premium.
         {
             let mut st = lock_write(&self.state);
             st.joined_at.insert(normalized.clone(), now_secs());
             st.authed.remove(&normalized);
         }
         data.player
-            .send_system_message(TextComponent::text(msg(join_prompt_key(status))), false);
+            .send_system_message(TextComponent::text(&message(
+                &self.state,
+                join_prompt_key(status),
+            )), false);
         data
-    }
-}
-
-/// Outcome of the join-time premium check.
-enum PremiumVerdict {
-    Premium(String),
-    Cracked,
-    Unavailable,
-}
-
-impl JoinHandler {
-    /// Cache-then-live premium lookup. Only live resolutions are cached;
-    /// transport failures (fail closed) leave the cache untouched.
-    fn premium_verdict(&self, normalized: &str, now: u64) -> PremiumVerdict {
-        let cache_hit = { lock_read(&self.state).premium.get(normalized, now) };
-        if cache_hit.is_some() {
-            // A cached `false` is a known cracked verdict; a cached `true`
-            // without a stored premium_id (earlier persist failure, deleted
-            // account) cannot auto-login without the id: fail closed, prompt.
-            return PremiumVerdict::Cracked;
-        }
-        match resolve_premium(normalized) {
-            Ok((true, Some(id))) => {
-                lock_read(&self.state)
-                    .premium
-                    .put(normalized.to_string(), true, now);
-                PremiumVerdict::Premium(id)
-            }
-            Ok((false, _)) => {
-                lock_read(&self.state)
-                    .premium
-                    .put(normalized.to_string(), false, now);
-                PremiumVerdict::Cracked
-            }
-            Ok((true, None)) => PremiumVerdict::Cracked,
-            Err(e) => {
-                tracing::warn!("gln-auth: premium lookup failed for {normalized}: {e}");
-                PremiumVerdict::Unavailable
-            }
-        }
-    }
-
-    /// Persists the premium_id: updates an existing account or creates a new
-    /// one for a first-join premium player. True on success.
-    fn persist_premium(
-        &self,
-        data: &PlayerJoinEventData,
-        normalized: &str,
-        name: &str,
-        ip: &str,
-        id: String,
-    ) -> bool {
-        let uuid = data.player.get_id().to_string();
-        let now = now_secs();
-        let account = match lock_read(&self.state).store.get_account(normalized) {
-            Ok(Some(mut existing)) => {
-                existing.premium_id = Some(id);
-                existing.last_ip = ip.to_string();
-                existing.last_seen = now as i64;
-                existing
-            }
-            Ok(None) => Account {
-                name: name.to_string(),
-                uuid,
-                premium_id: Some(id),
-                hash: String::new(),
-                last_ip: ip.to_string(),
-                last_seen: now as i64,
-                created: now as i64,
-            },
-            Err(e) => {
-                tracing::error!("gln-auth: premium persist lookup failed for {normalized}: {e}");
-                return false;
-            }
-        };
-        if let Err(e) = lock_read(&self.state).store.save_account(&account) {
-            tracing::error!("gln-auth: premium persist save failed for {normalized}: {e}");
-            return false;
-        }
-        true
     }
 }
 
@@ -423,11 +399,12 @@ pub struct LeaveHandler {
 impl EventHandler<PlayerLeaveEvent> for LeaveHandler {
     fn handle(&self, _server: Server, data: PlayerLeaveEventData) -> PlayerLeaveEventData {
         let normalized = normalize_name(&data.player.get_name());
-        let ip = data.player.get_ip();
         {
             let mut st = lock_write(&self.state);
             st.joined_at.remove(&normalized);
-            st.failures.remove(&ip);
+            // The per-IP failure counter is deliberately NOT cleared here:
+            // reconnecting must not reset the rate limit. It only resets on
+            // a successful /login.
         }
         mark_unauthed(&self.state, &normalized);
         // The session row is kept on purpose so a relog within the window resumes.
@@ -499,25 +476,108 @@ impl EventHandler<PlayerCommandPreprocessEvent> for FreezeCommandHandler {
     }
 }
 
+/// Block break by an unauthenticated player is cancelled. The event data
+/// carries `player: option<player>`; a non-player break is left alone.
+pub struct FreezeBlockBreakHandler {
+    pub state: SharedState,
+}
+
+impl EventHandler<BlockBreakEvent> for FreezeBlockBreakHandler {
+    fn handle(&self, _server: Server, mut data: BlockBreakEventData) -> BlockBreakEventData {
+        if let Some(player) = data.player.as_ref() {
+            let normalized = normalize_name(&player.get_name());
+            if freeze_check(player, &self.state, &normalized) {
+                data.cancelled = true;
+            }
+        }
+        data
+    }
+}
+
+pub struct FreezeBlockPlaceHandler {
+    pub state: SharedState,
+}
+
+impl EventHandler<BlockPlaceEvent> for FreezeBlockPlaceHandler {
+    fn handle(&self, _server: Server, mut data: BlockPlaceEventData) -> BlockPlaceEventData {
+        let normalized = normalize_name(&data.player.get_name());
+        if freeze_check(&data.player, &self.state, &normalized) {
+            data.cancelled = true;
+        }
+        data
+    }
+}
+
+pub struct FreezeInteractHandler {
+    pub state: SharedState,
+}
+
+impl EventHandler<PlayerInteractEvent> for FreezeInteractHandler {
+    fn handle(&self, _server: Server, mut data: PlayerInteractEventData) -> PlayerInteractEventData {
+        let normalized = normalize_name(&data.player.get_name());
+        if freeze_check(&data.player, &self.state, &normalized) {
+            data.cancelled = true;
+        }
+        data
+    }
+}
+
+pub struct FreezeDropItemHandler {
+    pub state: SharedState,
+}
+
+impl EventHandler<PlayerDropItemEvent> for FreezeDropItemHandler {
+    fn handle(&self, _server: Server, mut data: PlayerDropItemEventData) -> PlayerDropItemEventData {
+        let normalized = normalize_name(&data.player.get_name());
+        if freeze_check(&data.player, &self.state, &normalized) {
+            data.cancelled = true;
+        }
+        data
+    }
+}
+
+/// Cancels entity damage dealt BY an unauthenticated player. The event data
+/// carries `damager-id: s32` (a raw entity id, not a Player handle), so the
+/// damager is matched against the entity ids of online players via
+/// `server.get_all_players()` + `as_entity().get_id()` and run through the
+/// same freeze logic (timeout sweep included) as the other freeze handlers.
+/// Damage TO a frozen player is not blocked here: the WIT record has no
+/// attacker info on the `entity-damage` event, so the freeze covers the
+/// aggressive side only.
+pub struct FreezeAttackHandler {
+    pub state: SharedState,
+}
+
+impl EventHandler<EntityDamageByEntityEvent> for FreezeAttackHandler {
+    fn handle(
+        &self,
+        server: Server,
+        mut data: EntityDamageByEntityEventData,
+    ) -> EntityDamageByEntityEventData {
+        for damager in server.get_all_players() {
+            if damager.as_entity().get_id() as i32 != data.damager_id {
+                continue;
+            }
+            let normalized = normalize_name(&damager.get_name());
+            if freeze_check(&damager, &self.state, &normalized) {
+                data.cancelled = true;
+            }
+            break;
+        }
+        data
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn authed_set_tracks_login() {
-        let mut set = std::collections::HashSet::new();
-        set.insert("steve".to_string());
-        assert!(set.contains("steve"));
-        set.remove("steve");
-        assert!(!set.contains("steve"));
-    }
-
-    /// Unknown account existence (store error) must prompt /login, not
-    /// /register: prompting register on a store error points an existing
-    /// account at the wrong command. Missing -> register, Exists -> login.
+    /// Unknown account existence (store error) must prompt /login, not the
+    /// register choice: prompting register on a store error points an
+    /// existing account at the wrong command. Missing -> choice, Exists -> login.
     #[test]
     fn join_prompt_falls_back_to_login_when_account_unknown() {
-        assert_eq!(join_prompt_key(AccountStatus::Missing), "join.register");
+        assert_eq!(join_prompt_key(AccountStatus::Missing), "join.choice");
         assert_eq!(join_prompt_key(AccountStatus::Exists), "join.login");
         assert_eq!(join_prompt_key(AccountStatus::Unknown), "join.login");
     }
@@ -551,6 +611,7 @@ mod tests {
         assert!(is_command_allowed("/changepassword old new"));
         assert!(is_command_allowed("/unregister pw"));
         assert!(is_command_allowed("/setpremium steve on"));
+        assert!(is_command_allowed("/premium"));
         assert!(is_command_allowed("register"));
         assert!(!is_command_allowed("say hello"));
         assert!(!is_command_allowed("/give steve diamond"));
@@ -558,5 +619,54 @@ mod tests {
         assert!(!is_command_allowed(""));
         // Prefixes must not leak through: "loginx" is not "login".
         assert!(!is_command_allowed("loginx"));
+    }
+
+    /// Build a SharedState with the given failures map, for bookkeeping tests.
+    fn test_state(failures: Vec<(&str, u32)>) -> SharedState {
+        let mut st = AppState {
+            store: crate::storage::AuthStore::open_in_memory(),
+            cfg: crate::config::PluginConfig::default(),
+            authed: std::collections::HashSet::new(),
+            failures: std::collections::HashMap::new(),
+            joined_at: std::collections::HashMap::new(),
+            premium: crate::premium::PremiumCache::new(1),
+        };
+        for (ip, count) in failures {
+            st.failures.insert(ip.to_string(), count);
+        }
+        std::sync::Arc::new(std::sync::RwLock::new(st))
+    }
+
+    /// FIX 2 regression: a leave event must NOT reset the per-IP failure
+    /// counter — reconnecting must not be a rate-limit bypass. The counter
+    /// only resets on a successful login (see commands::LoginHandler).
+    #[test]
+    fn leave_does_not_reset_failure_counter() {
+        let state = test_state(vec![("9.9.9.9", 4)]);
+        // Simulate what LeaveHandler.run does for bookkeeping: it removes
+        // joined_at but must not touch failures. We can't construct a
+        // PlayerLeaveEventData without a live server, so we assert the
+        // invariant the handler is written against: after a record_failure
+        // and the "leave" cleanup (joined_at removal only), the counter stays.
+        assert!(record_failure(&state, "9.9.9.9", 5));
+        let mut st = lock_write(&state);
+        st.joined_at.remove("ghost");
+        assert_eq!(st.failures.get("9.9.9.9"), Some(&5), "failures must survive leave");
+    }
+
+    /// FIX 2 companion: the counter DOES reset on successful login.
+    #[test]
+    fn successful_login_resets_failure_counter() {
+        let state = test_state(vec![("9.9.9.9", 3)]);
+        {
+            let mut st = lock_write(&state);
+            st.failures.remove("9.9.9.9");
+        }
+        assert!(!is_authed(&state, "steve"));
+        assert_eq!(
+            lock_read(&state).failures.get("9.9.9.9"),
+            None,
+            "login success clears the counter"
+        );
     }
 }

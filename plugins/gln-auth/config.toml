@@ -15,8 +15,8 @@ timeout_secs = 120
 session_minutes = 120
 
 # Failed /login attempts from one IP before that player is kicked with the
-# rate-limit message. The counter resets on a successful login and when the
-# player leaves. Default: 5.
+# rate-limit message. The counter resets ONLY on a successful login —
+# reconnecting does not reset it. Default: 5.
 max_login_tries = 5
 
 # Minimum and maximum password length (in bytes). Default: 8 and 64.
@@ -27,15 +27,36 @@ pw_max_len = 64
 # name rules (3-16 chars, letters/digits/underscore). Default shown.
 name_regex = '^[a-zA-Z0-9_]{3,16}$'
 
-# Whether the plugin asks Mojang's session servers whether a joining name
-# belongs to a premium (paid) account. Requires the http.outbound plugin
-# permission and outbound internet access from the server host. Premium
-# players are auto-logged-in. Default: true.
+# Whether the /premium command may ask Mojang's session servers whether the
+# joining name belongs to a premium (paid) account. Requires the
+# http.outbound plugin permission and outbound internet access from the
+# server host. Default: true.
 premium_check_enabled = true
 
 # How long a premium/cracked verdict from Mojang is cached (minutes), to
 # avoid hammering the API on relogs. Default: 45.
 premium_cache_minutes = 45
 
-# NOTE: all player-facing messages are compiled into the plugin and are
-# NOT configurable in v1; there is intentionally no [messages] section.
+# Player-facing messages. Every key below can be overridden with your own
+# text; keys you omit keep the built-in default, and unknown keys are
+# ignored. Keys must be quoted because they contain dots.
+[messages]
+"join.choice" = "Are you premium or cracked? Use /premium to verify a premium name, or /register <password> <confirm> to create a cracked account."
+"join.login" = "Please login: /login <password>"
+"join.register" = "Please register: /register <password> <confirm>"
+"login.already" = "You are already logged in."
+"login.duplicate" = "Already logged in from another session."
+"login.ok" = "Logged in."
+"login.rate_limited" = "Too many failed login attempts."
+"login.wrong" = "Wrong password."
+"premium.auto" = "Premium account detected, logged in."
+"premium.exists" = "An account with this name already exists, use /login."
+"premium.nopass" = "Account has no password, set a password first."
+"premium.not" = "That name is not premium, use /register."
+"premium.ok" = "Premium verified, welcome."
+"premium.unavailable" = "Could not verify premium status, try again later."
+"register.exists" = "An account with this name already exists. Use /login."
+"register.mismatch" = "Passwords do not match."
+"register.ok" = "Registered and logged in."
+"session.resume" = "Session resumed, welcome back."
+"timeout.kick" = "Login timeout."

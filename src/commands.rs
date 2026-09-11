@@ -1,9 +1,12 @@
-//! Auth commands: register/login/logout/changepassword/unregister + admin setpremium/forcelogin.
+//! Auth commands: register/login/logout/premium/changepassword/unregister
+//! + admin setpremium/forcelogin.
 //!
 //! Fail-closed rules enforced here:
 //! - hash/save/session failures send an error and never mark the player authed,
 //! - wrong passwords increment the per-IP failure counter and never mark authed,
-//! - storage lookup failures abort the action with a generic error (state unchanged).
+//! - storage lookup failures abort the action with a generic error (state unchanged),
+//! - /premium only ever CREATES an account: an existing account of any kind is
+//!   rejected so a password account can never be silently converted.
 
 use pumpkin_plugin_api::command::{
     Arg, ArgumentType, Command, CommandError, CommandNode, CommandSender, ConsumedArgs, StringType,
@@ -14,8 +17,9 @@ use pumpkin_plugin_api::{Player, Server};
 use std::sync::{RwLockReadGuard, RwLockWriteGuard};
 
 use crate::config::PluginConfig;
+use crate::handlers::message;
 use crate::hash::{hash_password, verify_password};
-use crate::messages::msg;
+use crate::premium::resolve_premium;
 use crate::session::{new_expiry, now_secs};
 use crate::storage::{Account, Session};
 use crate::validation::{normalize_name, validate_name, validate_password};
@@ -117,6 +121,14 @@ pub fn build_commands(state: SharedState) -> Vec<(Command, &'static str)> {
             PLAYER_PERMISSION,
         ),
         (
+            Command::new(
+                &["premium".to_string()],
+                "Verify this name as premium and log in",
+            )
+            .execute(PremiumHandler { state: state.clone() }),
+            PLAYER_PERMISSION,
+        ),
+        (
             Command::new(&["logout".to_string()], "Logout of your account")
                 .execute(LogoutHandler { state: state.clone() }),
             PLAYER_PERMISSION,
@@ -192,13 +204,13 @@ impl CommandHandler for RegisterHandler {
         };
 
         if lock_read(&self.state).authed.contains(&normalized) {
-            reply_err(&sender, "You are already logged in.");
+            reply_err(&sender, &message(&self.state, "login.already"));
             return Ok(1);
         }
 
         match find_account(&self.state, &normalized) {
             Ok(Some(_)) => {
-                reply_err(&sender, "An account with this name already exists.");
+                reply_err(&sender, &message(&self.state, "register.exists"));
                 return Ok(1);
             }
             Ok(None) => {}
@@ -220,7 +232,7 @@ impl CommandHandler for RegisterHandler {
             return Ok(1);
         }
         if password != confirm {
-            reply_err(&sender, msg("register.mismatch"));
+            reply_err(&sender, &message(&self.state, "register.mismatch"));
             return Ok(1);
         }
 
@@ -260,8 +272,8 @@ impl CommandHandler for RegisterHandler {
             return Ok(1);
         }
 
-        lock_write(&self.state).authed.insert(normalized);
-        reply_ok(&sender, msg("register.ok"));
+        crate::handlers::mark_authed(&self.state, &normalized);
+        reply_ok(&sender, &message(&self.state, "register.ok"));
         Ok(0)
     }
 }
@@ -288,6 +300,11 @@ impl CommandHandler for LoginHandler {
             return Ok(1);
         };
 
+        if lock_read(&self.state).authed.contains(&normalized) {
+            reply_err(&sender, &message(&self.state, "login.already"));
+            return Ok(1);
+        }
+
         let account = match find_account(&self.state, &normalized) {
             Ok(Some(account)) => account,
             Ok(None) => {
@@ -302,10 +319,13 @@ impl CommandHandler for LoginHandler {
         };
 
         if !verify_password(&account.hash, &password) {
-            reply_err(&sender, msg("login.wrong"));
+            reply_err(&sender, &message(&self.state, "login.wrong"));
             let cfg = cfg_of(&self.state);
             if crate::handlers::record_failure(&self.state, &ip, cfg.max_login_tries) {
-                tracing::warn!("gln-auth: ip {ip} kicked after {} failed logins", cfg.max_login_tries);
+                tracing::warn!(
+                    "gln-auth: ip {ip} kicked after {} failed logins",
+                    cfg.max_login_tries
+                );
                 crate::handlers::kick_rate_limited(&player, &self.state, &normalized);
             }
             return Ok(1);
@@ -313,7 +333,7 @@ impl CommandHandler for LoginHandler {
 
         let cfg = cfg_of(&self.state);
         let session = Session {
-            name,
+            name: name.clone(),
             ip: ip.clone(),
             expires_at: new_expiry(now_secs(), &cfg),
         };
@@ -325,10 +345,10 @@ impl CommandHandler for LoginHandler {
 
         {
             let mut st = lock_write(&self.state);
-            st.authed.insert(normalized);
             st.failures.remove(&ip);
         }
-        reply_ok(&sender, msg("login.ok"));
+        crate::handlers::mark_authed(&self.state, &normalized);
+        reply_ok(&sender, &message(&self.state, "login.ok"));
         Ok(0)
     }
 }
@@ -401,7 +421,7 @@ impl CommandHandler for ChangePasswordHandler {
         };
 
         if !verify_password(&account.hash, &old) {
-            reply_err(&sender, msg("login.wrong"));
+            reply_err(&sender, &message(&self.state, "login.wrong"));
             return Ok(1);
         }
 
@@ -464,7 +484,7 @@ impl CommandHandler for UnregisterHandler {
         };
 
         if !verify_password(&account.hash, &password) {
-            reply_err(&sender, msg("login.wrong"));
+            reply_err(&sender, &message(&self.state, "login.wrong"));
             return Ok(1);
         }
 
@@ -475,12 +495,108 @@ impl CommandHandler for UnregisterHandler {
         }
 
         if let Err(e) = lock_read(&self.state).store.clear_session(&normalized) {
-            tracing::warn!("gln-auth: unregister clear_session failed for {normalized}: {e}");
+            tracing::error!("gln-auth: unregister clear_session failed for {normalized}: {e}");
         }
-        lock_write(&self.state).authed.remove(&normalized);
+        crate::handlers::mark_unauthed(&self.state, &normalized);
 
         reply_ok(&sender, "Account deleted.");
         Ok(0)
+    }
+}
+
+/// /premium — explicit premium-name claim for first joins (RULING-6 redesign).
+///
+/// Only runs when NO account exists for the name: an existing account of any
+/// kind (password or premium) is rejected, so a password account can never be
+/// auto-converted. The Mojang resolution uses the shared resolver (3-attempt
+/// budget, 5s connect timeout). Transport failures fail closed: no account
+/// is created, nothing is cached, the player is told to try later.
+struct PremiumHandler {
+    state: SharedState,
+}
+
+impl CommandHandler for PremiumHandler {
+    fn handle(
+        &self,
+        sender: CommandSender,
+        _server: Server,
+        _args: ConsumedArgs,
+    ) -> Result<i32, CommandError> {
+        let Some(player) = require_player(&sender) else {
+            return Ok(1);
+        };
+        let name = player.get_name();
+        let uuid = player.get_id().to_string();
+        let ip = player.get_ip();
+        let normalized = normalize_name(&name);
+
+        if lock_read(&self.state).authed.contains(&normalized) {
+            reply_err(&sender, &message(&self.state, "login.already"));
+            return Ok(1);
+        }
+
+        // An existing account of ANY kind blocks the claim: use /login.
+        match find_account(&self.state, &normalized) {
+            Ok(Some(_)) => {
+                reply_err(&sender, &message(&self.state, "premium.exists"));
+                return Ok(1);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::error!("gln-auth: premium lookup failed for {normalized}: {e}");
+                reply_err(&sender, STORE_ERROR);
+                return Ok(1);
+            }
+        }
+
+        if !cfg_of(&self.state).premium_check_enabled {
+            reply_err(&sender, &message(&self.state, "premium.unavailable"));
+            return Ok(1);
+        }
+
+        // Cached cracked verdicts short-circuit the HTTP call; a cached
+        // premium verdict is not enough (the cache stores no uuid), so a
+        // live resolve runs to obtain the id.
+        let now = now_secs();
+        if let Some(false) = lock_read(&self.state).premium.get(&normalized, now) {
+            reply_err(&sender, &message(&self.state, "premium.not"));
+            return Ok(1);
+        }
+
+        match resolve_premium(&normalized) {
+            Ok((true, Some(id))) => {
+                lock_read(&self.state).premium.put(normalized.clone(), true, now);
+                let account = Account {
+                    name: name.clone(),
+                    uuid,
+                    premium_id: Some(id),
+                    hash: String::new(),
+                    last_ip: ip,
+                    last_seen: now as i64,
+                    created: now as i64,
+                };
+                if let Err(e) = lock_read(&self.state).store.save_account(&account) {
+                    tracing::error!("gln-auth: premium save failed for {normalized}: {e}");
+                    reply_err(&sender, STORE_ERROR);
+                    return Ok(1);
+                }
+                crate::handlers::mark_authed(&self.state, &normalized);
+                reply_ok(&sender, &message(&self.state, "premium.ok"));
+                Ok(0)
+            }
+            // Cracked verdict (204/404), or a 200 without a parsable id.
+            Ok((false, _)) | Ok((true, None)) => {
+                lock_read(&self.state).premium.put(normalized.clone(), false, now);
+                reply_err(&sender, &message(&self.state, "premium.not"));
+                Ok(1)
+            }
+            // Transport failure: fail closed — no account, no cache write.
+            Err(e) => {
+                tracing::warn!("gln-auth: premium resolve failed for {normalized}: {e}");
+                reply_err(&sender, &message(&self.state, "premium.unavailable"));
+                Ok(1)
+            }
+        }
     }
 }
 
@@ -506,6 +622,13 @@ impl CommandHandler for SetPremiumHandler {
             Some(account) => account,
             None => return Ok(1),
         };
+
+        // Turning premium off on a hash-less account would make it
+        // permanently un-loginable: reject unless a password exists.
+        if !self.enable && account.hash.is_empty() {
+            reply_err(&sender, &message(&self.state, "premium.nopass"));
+            return Ok(1);
+        }
 
         account.premium_id = if self.enable {
             Some(account.uuid.clone())
@@ -550,7 +673,7 @@ impl CommandHandler for ForceLoginHandler {
             None => return Ok(1),
         }
 
-        lock_write(&self.state).authed.insert(normalized);
+        crate::handlers::mark_authed(&self.state, &normalized);
         reply_ok(&sender, &format!("Force-logged in {target}."));
         Ok(0)
     }

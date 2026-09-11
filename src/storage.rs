@@ -33,6 +33,15 @@ pub struct AuthStore {
 }
 
 impl AuthStore {
+    /// A store with no backing file, for unit tests only.
+    #[cfg(test)]
+    pub fn open_in_memory() -> Self {
+        Self {
+            path: PathBuf::from(":memory:"),
+            data: Mutex::new(StoreData::default()),
+        }
+    }
+
     pub fn open(path: &str) -> Result<Self, String> {
         let path = PathBuf::from(path);
         if let Some(parent) = path.parent() {

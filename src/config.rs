@@ -1,4 +1,7 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+use crate::messages::default_messages;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginConfig {
@@ -10,6 +13,10 @@ pub struct PluginConfig {
     pub name_regex: String,
     pub premium_check_enabled: bool,
     pub premium_cache_minutes: u64,
+    /// Player-facing message overrides (key -> text). Missing keys fall back
+    /// to the built-in defaults; unknown keys are ignored.
+    #[serde(default)]
+    pub messages: HashMap<String, String>,
 }
 
 impl Default for PluginConfig {
@@ -23,7 +30,22 @@ impl Default for PluginConfig {
             name_regex: r"^[a-zA-Z0-9_]{3,16}$".to_string(),
             premium_check_enabled: true,
             premium_cache_minutes: 45,
+            messages: default_messages(),
         }
+    }
+}
+
+impl PluginConfig {
+    /// Config-driven message lookup: the `[messages]` override for `key` if
+    /// present, otherwise the built-in default from `default_messages()`.
+    pub fn message(&self, key: &str) -> String {
+        if let Some(text) = self.messages.get(key) {
+            return text.clone();
+        }
+        default_messages()
+            .get(key)
+            .cloned()
+            .unwrap_or_else(|| "Unknown message.".to_string())
     }
 }
 
@@ -88,6 +110,28 @@ mod tests {
         assert_eq!(cfg.name_regex, "a+");
         assert!(!cfg.premium_check_enabled);
         assert_eq!(cfg.premium_cache_minutes, 5);
+        // No [messages] section: tolerant defaults, not an error.
+        assert_eq!(cfg.message("join.login"), "Please login: /login <password>");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A config with a custom message overrides only that key; every other
+    /// key falls back to the built-in default.
+    #[test]
+    fn message_override_wins_and_missing_keys_fall_back() {
+        let path = std::env::temp_dir().join("gln-auth-config-messages-9.toml");
+        std::fs::write(
+            &path,
+            "timeout_secs = 120\nsession_minutes = 120\nmax_login_tries = 5\npw_min_len = 8\npw_max_len = 64\nname_regex = 'x'\npremium_check_enabled = true\npremium_cache_minutes = 45\n\n[messages]\n\"login.wrong\" = \"Falsches Passwort.\"\n\"unknown.key\" = \"ignored\"\n",
+        )
+        .unwrap();
+        let cfg = load_config(path.to_str().unwrap()).expect("parse");
+        assert_eq!(cfg.message("login.wrong"), "Falsches Passwort.");
+        assert_eq!(cfg.message("login.ok"), "Logged in.");
+        assert_eq!(
+            cfg.message("premium.not"),
+            "That name is not premium, use /register."
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -115,5 +159,17 @@ mod tests {
         assert_eq!(cfg.name_regex, defaults.name_regex);
         assert_eq!(cfg.premium_check_enabled, defaults.premium_check_enabled);
         assert_eq!(cfg.premium_cache_minutes, defaults.premium_cache_minutes);
+        assert_eq!(cfg.messages, defaults.messages);
+    }
+
+    /// The generated default config must round-trip through TOML with the
+    /// full message table intact, so freshly generated configs parse cleanly.
+    #[test]
+    fn generated_default_config_roundtrips() {
+        let toml_str = default_config_toml();
+        let cfg: PluginConfig =
+            toml::from_str(&toml_str).expect("generated default config must parse");
+        assert_eq!(cfg.messages, default_messages());
+        assert_eq!(cfg.message("premium.not"), "That name is not premium, use /register.");
     }
 }
