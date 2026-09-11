@@ -1,5 +1,6 @@
 mod commands;
 mod config;
+mod handlers;
 mod hash;
 mod messages;
 mod session;
@@ -23,6 +24,7 @@ pub struct AppState {
     pub cfg: crate::config::PluginConfig,
     pub authed: HashSet<String>,
     pub failures: HashMap<String, u32>,
+    pub joined_at: HashMap<String, u64>,
 }
 
 struct GlnAuth;
@@ -76,7 +78,10 @@ impl Plugin for GlnAuth {
             cfg,
             authed: HashSet::new(),
             failures: HashMap::new(),
+            joined_at: HashMap::new(),
         }));
+
+        handlers::register_handlers(&context, state.clone())?;
 
         for (command, permission) in commands::build_commands(state.clone()) {
             let default = if permission == commands::ADMIN_PERMISSION {
