@@ -1,4 +1,5 @@
 mod config;
+mod hash;
 mod messages;
 mod validation;
 
