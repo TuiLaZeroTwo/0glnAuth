@@ -1,3 +1,6 @@
+mod config;
+mod messages;
+
 use pumpkin_plugin_api::{Context, Plugin, PluginMetadata};
 use tracing::info;
 
