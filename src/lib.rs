@@ -93,20 +93,24 @@ impl Plugin for ZeroGlnAuth {
 
         handlers::register_handlers(&context, state.clone())?;
 
-        for (command, permission) in commands::build_commands(state.clone()) {
-            let default = if permission == commands::ADMIN_PERMISSION {
-                PermissionDefault::Op(PermissionLevel::Three)
-            } else {
-                PermissionDefault::Allow
-            };
-            context
-                .register_permission(&Permission {
-                    node: permission.to_string(),
-                    description: "0gln-auth command permission".to_string(),
-                    default,
-                    children: vec![],
-                })
-                .map_err(|e| format!("0gln-auth: failed to register permission {permission}: {e}"))?;
+        let built = commands::build_commands(state.clone());
+        let mut registered: HashSet<&str> = HashSet::new();
+        for (command, permission) in built {
+            if registered.insert(permission) {
+                let default = if permission == commands::ADMIN_PERMISSION {
+                    PermissionDefault::Op(PermissionLevel::Three)
+                } else {
+                    PermissionDefault::Allow
+                };
+                context
+                    .register_permission(&Permission {
+                        node: permission.to_string(),
+                        description: "0gln-auth command permission".to_string(),
+                        default,
+                        children: vec![],
+                    })
+                    .map_err(|e| format!("0gln-auth: failed to register permission {permission}: {e}"))?;
+            }
             context.register_command(command, permission);
         }
 
