@@ -26,9 +26,9 @@ use crate::validation::{normalize_name, validate_name, validate_password};
 use crate::{AppState, SharedState};
 
 /// Permission node for player-facing auth commands (registered with default Allow).
-pub const PLAYER_PERMISSION: &str = "0glnauth.player";
+pub const PLAYER_PERMISSION: &str = "0gln Auth:player";
 /// Permission node for admin commands (registered with default op-level 3+).
-pub const ADMIN_PERMISSION: &str = "0glnauth.admin";
+pub const ADMIN_PERMISSION: &str = "0gln Auth:admin";
 
 const PLAYER_ONLY: &str = "This command can only be used by players.";
 const STORE_ERROR: &str = "Internal error, action was not completed.";
