@@ -189,19 +189,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gln-auth"
-version = "0.1.0"
-dependencies = [
- "argon2",
- "pumpkin-plugin-api",
- "serde",
- "serde_json",
- "toml",
- "tracing",
- "waki",
-]
-
-[[package]]
 name = "hash32"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -969,6 +956,19 @@ dependencies = [
  "serde_json",
  "unicode-ident",
  "wasmparser 0.258.0",
+]
+
+[[package]]
+name = "zero-gln-auth"
+version = "0.1.0"
+dependencies = [
+ "argon2",
+ "pumpkin-plugin-api",
+ "serde",
+ "serde_json",
+ "toml",
+ "tracing",
+ "waki",
 ]
 
 [[package]]

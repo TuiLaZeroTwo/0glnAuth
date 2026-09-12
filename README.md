@@ -1,4 +1,4 @@
-# gln-auth
+# 0gln Auth
 
 A Pumpkin (WASM) authentication plugin for offline-mode Minecraft servers:
 premium (paid) players claim their name once with `/premium` (verified
@@ -22,26 +22,27 @@ name, per-IP rate limiting, and Argon2 password hashing are built in.
 cargo build --release
 ```
 
-The plugin artifact is `target/wasm32-wasip2/release/gln_auth.wasm`.
+The plugin artifact is `target/wasm32-wasip2/release/zero_gln_auth.wasm`.
 
 ## Install
 
-1. Copy `gln_auth.wasm` into the server's `plugins/` directory.
-2. Start the server. On first load the plugin creates:
-   - `plugins/gln-auth/config.toml` — configuration (defaults; edit and
-     restart to change),
-   - `plugins/gln-auth/gln-auth.json` — account/session store.
+1. Copy `zero_gln_auth.wasm` into the server's `plugins/` directory.
+2. Start the server. On first load the plugin creates, inside its data
+   folder (`plugins/data/0gln Auth/` on the server):
+   - `config.toml` — configuration (defaults; edit and restart to change),
+   - `0gln-auth.json` — account/session store.
 3. Grant the plugin the permissions it requests (`fs.read.data`,
    `fs.write.data`, `http.outbound`) if your Pumpkin build prompts for them.
 
-Note: the `plugins/gln-auth/` folder in this repository contains only an
+Note: the `plugins/0gln-auth/` folder in this repository contains only an
 example `config.toml` for reference — the live config lives in the server's
-own `plugins/` directory.
+own plugin data folder.
 
 ## Configuration
 
-All keys live in `plugins/gln-auth/config.toml` (TOML). The repo copy at
-`plugins/gln-auth/config.toml` documents the same defaults.
+All keys live in the plugin data folder's `config.toml` (TOML), i.e.
+`plugins/data/0gln Auth/config.toml` on the server. The repo copy at
+`plugins/0gln-auth/config.toml` documents the same defaults.
 
 | Key                    | Default | Meaning |
 |------------------------|---------|---------|
@@ -155,16 +156,16 @@ Manual, against a live Pumpkin server (offline mode):
 
 ## Limitations
 
-- **WARNING — if gln-auth fails to load, the server runs WITHOUT auth.**
-  When the plugin's load fails (corrupt `gln-auth.json` store, malformed
+- **WARNING — if 0gln Auth fails to load, the server runs WITHOUT auth.**
+  When the plugin's load fails (corrupt `0gln-auth.json` store, malformed
   `config.toml`, denied permissions), Pumpkin disables the plugin, logs an
   error, and keeps the server running. In offline mode that means anyone
-  can join as any name. Fix the storage/config and confirm `gln-auth` shows
+  can join as any name. Fix the storage/config and confirm `0gln Auth` shows
   up in `/plugins` before opening the server to players.
 - Residual risk (accepted by the owner): a `/premium` claim can capture an
   unregistered stranger's premium name — the first person to run
   `/premium` with a premium-verified name owns it on this server.
-- The JSON flatfile store (`gln-auth.json`) is not safe for concurrent
+- The JSON flatfile store (`0gln-auth.json`) is not safe for concurrent
   servers sharing a plugin directory — single server per store only.
 - No email or 2FA in v1.
 - The Mojang premium check requires the `http.outbound` plugin permission

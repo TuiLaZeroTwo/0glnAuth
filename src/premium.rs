@@ -141,7 +141,7 @@ pub fn resolve_premium(name: &str) -> Result<(bool, Option<String>), String> {
         let outcome = match fetch_once(&format!("{url}{name}")) {
             Ok((200, body)) => {
                 if let Some(id) = parse_mojang_profile_response(200, &body) {
-                    tracing::debug!("gln-auth: premium fetch ok via {url} for {name}");
+                    tracing::debug!("0gln-auth: premium fetch ok via {url} for {name}");
                     return Ok((true, Some(id)));
                 }
                 // 200 without a parsable id: fall through to the next endpoint.
@@ -167,7 +167,7 @@ pub fn resolve_premium(name: &str) -> Result<(bool, Option<String>), String> {
             std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS));
         }
     }
-    Err(format!("gln-auth: premium lookup failed for {name}: {last_err}"))
+    Err(format!("0gln-auth: premium lookup failed for {name}: {last_err}"))
 }
 
 #[cfg(test)]

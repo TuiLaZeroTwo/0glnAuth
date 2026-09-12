@@ -125,7 +125,7 @@ mod tests {
 
     #[test]
     fn account_and_session_roundtrip() {
-        let path = std::env::temp_dir().join(format!("gln-auth-test-{}.json", std::process::id()));
+        let path = std::env::temp_dir().join(format!("0gln-auth-test-{}.json", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let store = AuthStore::open(path.to_str().unwrap()).expect("open");
         let acct = Account {
@@ -154,7 +154,7 @@ mod tests {
 
     #[test]
     fn temp_corrupt_file_fails_closed() {
-        let path = std::env::temp_dir().join(format!("gln-auth-corrupt-{}.json", std::process::id()));
+        let path = std::env::temp_dir().join(format!("0gln-auth-corrupt-{}.json", std::process::id()));
         std::fs::write(&path, "{ not valid json !!").unwrap();
         let before = std::fs::read_to_string(&path).unwrap();
         assert!(AuthStore::open(path.to_str().unwrap()).is_err());

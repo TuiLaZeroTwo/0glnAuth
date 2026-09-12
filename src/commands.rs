@@ -26,9 +26,9 @@ use crate::validation::{normalize_name, validate_name, validate_password};
 use crate::{AppState, SharedState};
 
 /// Permission node for player-facing auth commands (registered with default Allow).
-pub const PLAYER_PERMISSION: &str = "glnauth.player";
+pub const PLAYER_PERMISSION: &str = "0glnauth.player";
 /// Permission node for admin commands (registered with default op-level 3+).
-pub const ADMIN_PERMISSION: &str = "glnauth.admin";
+pub const ADMIN_PERMISSION: &str = "0glnauth.admin";
 
 const PLAYER_ONLY: &str = "This command can only be used by players.";
 const STORE_ERROR: &str = "Internal error, action was not completed.";
@@ -86,7 +86,7 @@ fn lookup_or_report(
             None
         }
         Err(e) => {
-            tracing::error!("gln-auth: account lookup failed for {normalized}: {e}");
+            tracing::error!("0gln-auth: account lookup failed for {normalized}: {e}");
             reply_err(sender, STORE_ERROR);
             None
         }
@@ -215,7 +215,7 @@ impl CommandHandler for RegisterHandler {
             }
             Ok(None) => {}
             Err(e) => {
-                tracing::error!("gln-auth: register lookup failed for {normalized}: {e}");
+                tracing::error!("0gln-auth: register lookup failed for {normalized}: {e}");
                 reply_err(&sender, STORE_ERROR);
                 return Ok(1);
             }
@@ -239,7 +239,7 @@ impl CommandHandler for RegisterHandler {
         let hash = match hash_password(&password) {
             Ok(h) => h,
             Err(e) => {
-                tracing::error!("gln-auth: register hash failed for {normalized}: {e}");
+                tracing::error!("0gln-auth: register hash failed for {normalized}: {e}");
                 reply_err(&sender, "Registration failed, please try again.");
                 return Ok(1);
             }
@@ -256,7 +256,7 @@ impl CommandHandler for RegisterHandler {
             created: now as i64,
         };
         if let Err(e) = lock_read(&self.state).store.save_account(&account) {
-            tracing::error!("gln-auth: register save_account failed for {normalized}: {e}");
+            tracing::error!("0gln-auth: register save_account failed for {normalized}: {e}");
             reply_err(&sender, STORE_ERROR);
             return Ok(1);
         }
@@ -267,7 +267,7 @@ impl CommandHandler for RegisterHandler {
             expires_at: new_expiry(now, &cfg),
         };
         if let Err(e) = lock_read(&self.state).store.set_session(&session) {
-            tracing::error!("gln-auth: register set_session failed for {normalized}: {e}");
+            tracing::error!("0gln-auth: register set_session failed for {normalized}: {e}");
             reply_err(&sender, STORE_ERROR);
             return Ok(1);
         }
@@ -312,7 +312,7 @@ impl CommandHandler for LoginHandler {
                 return Ok(1);
             }
             Err(e) => {
-                tracing::error!("gln-auth: login lookup failed for {normalized}: {e}");
+                tracing::error!("0gln-auth: login lookup failed for {normalized}: {e}");
                 reply_err(&sender, STORE_ERROR);
                 return Ok(1);
             }
@@ -323,7 +323,7 @@ impl CommandHandler for LoginHandler {
             let cfg = cfg_of(&self.state);
             if crate::handlers::record_failure(&self.state, &ip, cfg.max_login_tries) {
                 tracing::warn!(
-                    "gln-auth: ip {ip} kicked after {} failed logins",
+                    "0gln-auth: ip {ip} kicked after {} failed logins",
                     cfg.max_login_tries
                 );
                 crate::handlers::kick_rate_limited(&player, &self.state, &normalized);
@@ -338,7 +338,7 @@ impl CommandHandler for LoginHandler {
             expires_at: new_expiry(now_secs(), &cfg),
         };
         if let Err(e) = lock_read(&self.state).store.set_session(&session) {
-            tracing::error!("gln-auth: login set_session failed for {normalized}: {e}");
+            tracing::error!("0gln-auth: login set_session failed for {normalized}: {e}");
             reply_err(&sender, STORE_ERROR);
             return Ok(1);
         }
@@ -376,7 +376,7 @@ impl CommandHandler for LogoutHandler {
             return Ok(1);
         }
         if let Err(e) = st.store.clear_session(&normalized) {
-            tracing::error!("gln-auth: logout clear_session failed for {normalized}: {e}");
+            tracing::error!("0gln-auth: logout clear_session failed for {normalized}: {e}");
             drop(st);
             reply_err(&sender, STORE_ERROR);
             return Ok(1);
@@ -434,7 +434,7 @@ impl CommandHandler for ChangePasswordHandler {
         let hash = match hash_password(&new) {
             Ok(h) => h,
             Err(e) => {
-                tracing::error!("gln-auth: changepassword hash failed for {normalized}: {e}");
+                tracing::error!("0gln-auth: changepassword hash failed for {normalized}: {e}");
                 reply_err(&sender, "Password change failed, please try again.");
                 return Ok(1);
             }
@@ -442,7 +442,7 @@ impl CommandHandler for ChangePasswordHandler {
 
         let updated = Account { hash, ..account };
         if let Err(e) = lock_read(&self.state).store.save_account(&updated) {
-            tracing::error!("gln-auth: changepassword save failed for {normalized}: {e}");
+            tracing::error!("0gln-auth: changepassword save failed for {normalized}: {e}");
             reply_err(&sender, STORE_ERROR);
             return Ok(1);
         }
@@ -489,13 +489,13 @@ impl CommandHandler for UnregisterHandler {
         }
 
         if let Err(e) = lock_read(&self.state).store.delete_account(&normalized) {
-            tracing::error!("gln-auth: unregister delete_account failed for {normalized}: {e}");
+            tracing::error!("0gln-auth: unregister delete_account failed for {normalized}: {e}");
             reply_err(&sender, STORE_ERROR);
             return Ok(1);
         }
 
         if let Err(e) = lock_read(&self.state).store.clear_session(&normalized) {
-            tracing::error!("gln-auth: unregister clear_session failed for {normalized}: {e}");
+            tracing::error!("0gln-auth: unregister clear_session failed for {normalized}: {e}");
         }
         crate::handlers::mark_unauthed(&self.state, &normalized);
 
@@ -543,7 +543,7 @@ impl CommandHandler for PremiumHandler {
             }
             Ok(None) => {}
             Err(e) => {
-                tracing::error!("gln-auth: premium lookup failed for {normalized}: {e}");
+                tracing::error!("0gln-auth: premium lookup failed for {normalized}: {e}");
                 reply_err(&sender, STORE_ERROR);
                 return Ok(1);
             }
@@ -576,7 +576,7 @@ impl CommandHandler for PremiumHandler {
                     created: now as i64,
                 };
                 if let Err(e) = lock_read(&self.state).store.save_account(&account) {
-                    tracing::error!("gln-auth: premium save failed for {normalized}: {e}");
+                    tracing::error!("0gln-auth: premium save failed for {normalized}: {e}");
                     reply_err(&sender, STORE_ERROR);
                     return Ok(1);
                 }
@@ -592,7 +592,7 @@ impl CommandHandler for PremiumHandler {
             }
             // Transport failure: fail closed — no account, no cache write.
             Err(e) => {
-                tracing::warn!("gln-auth: premium resolve failed for {normalized}: {e}");
+                tracing::warn!("0gln-auth: premium resolve failed for {normalized}: {e}");
                 reply_err(&sender, &message(&self.state, "premium.unavailable"));
                 Ok(1)
             }
@@ -636,7 +636,7 @@ impl CommandHandler for SetPremiumHandler {
             None
         };
         if let Err(e) = lock_read(&self.state).store.save_account(&account) {
-            tracing::error!("gln-auth: setpremium save failed for {normalized}: {e}");
+            tracing::error!("0gln-auth: setpremium save failed for {normalized}: {e}");
             reply_err(&sender, STORE_ERROR);
             return Ok(1);
         }

@@ -199,7 +199,7 @@ pub fn register_handlers(context: &Context, state: SharedState) -> Result<(), St
             EventPriority::Normal,
             true,
         )
-        .map_err(|e| format!("gln-auth: failed to register pre-login handler: {e}"))?;
+        .map_err(|e| format!("0gln-auth: failed to register pre-login handler: {e}"))?;
     context
         .register_event_handler(
             JoinHandler {
@@ -208,7 +208,7 @@ pub fn register_handlers(context: &Context, state: SharedState) -> Result<(), St
             EventPriority::Normal,
             true,
         )
-        .map_err(|e| format!("gln-auth: failed to register join handler: {e}"))?;
+        .map_err(|e| format!("0gln-auth: failed to register join handler: {e}"))?;
     context
         .register_event_handler(
             LeaveHandler {
@@ -217,7 +217,7 @@ pub fn register_handlers(context: &Context, state: SharedState) -> Result<(), St
             EventPriority::Normal,
             true,
         )
-        .map_err(|e| format!("gln-auth: failed to register leave handler: {e}"))?;
+        .map_err(|e| format!("0gln-auth: failed to register leave handler: {e}"))?;
     context
         .register_event_handler(
             FreezeMoveHandler {
@@ -226,7 +226,7 @@ pub fn register_handlers(context: &Context, state: SharedState) -> Result<(), St
             EventPriority::Normal,
             true,
         )
-        .map_err(|e| format!("gln-auth: failed to register move handler: {e}"))?;
+        .map_err(|e| format!("0gln-auth: failed to register move handler: {e}"))?;
     context
         .register_event_handler(
             FreezeChatHandler {
@@ -235,7 +235,7 @@ pub fn register_handlers(context: &Context, state: SharedState) -> Result<(), St
             EventPriority::Normal,
             true,
         )
-        .map_err(|e| format!("gln-auth: failed to register chat handler: {e}"))?;
+        .map_err(|e| format!("0gln-auth: failed to register chat handler: {e}"))?;
     context
         .register_event_handler(
             FreezeCommandHandler {
@@ -244,7 +244,7 @@ pub fn register_handlers(context: &Context, state: SharedState) -> Result<(), St
             EventPriority::Normal,
             true,
         )
-        .map_err(|e| format!("gln-auth: failed to register command handler: {e}"))?;
+        .map_err(|e| format!("0gln-auth: failed to register command handler: {e}"))?;
     context
         .register_event_handler(
             FreezeBlockBreakHandler {
@@ -253,7 +253,7 @@ pub fn register_handlers(context: &Context, state: SharedState) -> Result<(), St
             EventPriority::Normal,
             true,
         )
-        .map_err(|e| format!("gln-auth: failed to register block-break handler: {e}"))?;
+        .map_err(|e| format!("0gln-auth: failed to register block-break handler: {e}"))?;
     context
         .register_event_handler(
             FreezeBlockPlaceHandler {
@@ -262,7 +262,7 @@ pub fn register_handlers(context: &Context, state: SharedState) -> Result<(), St
             EventPriority::Normal,
             true,
         )
-        .map_err(|e| format!("gln-auth: failed to register block-place handler: {e}"))?;
+        .map_err(|e| format!("0gln-auth: failed to register block-place handler: {e}"))?;
     context
         .register_event_handler(
             FreezeInteractHandler {
@@ -271,7 +271,7 @@ pub fn register_handlers(context: &Context, state: SharedState) -> Result<(), St
             EventPriority::Normal,
             true,
         )
-        .map_err(|e| format!("gln-auth: failed to register interact handler: {e}"))?;
+        .map_err(|e| format!("0gln-auth: failed to register interact handler: {e}"))?;
     context
         .register_event_handler(
             FreezeDropItemHandler {
@@ -280,14 +280,14 @@ pub fn register_handlers(context: &Context, state: SharedState) -> Result<(), St
             EventPriority::Normal,
             true,
         )
-        .map_err(|e| format!("gln-auth: failed to register drop-item handler: {e}"))?;
+        .map_err(|e| format!("0gln-auth: failed to register drop-item handler: {e}"))?;
     context
         .register_event_handler(
             FreezeAttackHandler { state },
             EventPriority::Normal,
             true,
         )
-        .map_err(|e| format!("gln-auth: failed to register attack handler: {e}"))?;
+        .map_err(|e| format!("0gln-auth: failed to register attack handler: {e}"))?;
     Ok(())
 }
 
@@ -309,7 +309,7 @@ impl EventHandler<PlayerPreLoginEvent> for PreLoginHandler {
         };
         if occupied {
             tracing::warn!(
-                "gln-auth: denied duplicate join for {normalized} from {}",
+                "0gln-auth: denied duplicate join for {normalized} from {}",
                 data.ip_address
             );
             data.cancelled = true;
@@ -336,7 +336,7 @@ impl EventHandler<PlayerJoinEvent> for JoinHandler {
             Ok(Some(a)) => (Some(a), AccountStatus::Exists),
             Ok(None) => (None, AccountStatus::Missing),
             Err(e) => {
-                tracing::error!("gln-auth: join lookup failed for {normalized}: {e}");
+                tracing::error!("0gln-auth: join lookup failed for {normalized}: {e}");
                 (None, AccountStatus::Unknown)
             }
         };
@@ -359,7 +359,7 @@ impl EventHandler<PlayerJoinEvent> for JoinHandler {
                 Ok(Some(session)) => is_session_valid(&session, now_secs(), &ip),
                 Ok(None) => false,
                 Err(e) => {
-                    tracing::error!("gln-auth: join session lookup failed for {normalized}: {e}");
+                    tracing::error!("0gln-auth: join session lookup failed for {normalized}: {e}");
                     false
                 }
             };

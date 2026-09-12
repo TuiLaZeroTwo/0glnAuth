@@ -1,8 +1,9 @@
-# gln-auth example configuration.
+# 0gln Auth example configuration.
 #
 # On first start the plugin writes a fresh copy of this file (with these
-# same defaults) to <server>/plugins/gln-auth/config.toml. Edit THAT copy
-# and restart the server; this repo copy is only a reference example.
+# same defaults) into its data folder (on the server, under
+# plugins/data/0gln Auth/). Edit THAT copy and restart the server; this
+# repo copy is only a reference example.
 
 # Seconds an unauthenticated player may stay on the server before being
 # kicked. While unauthenticated the player is frozen (no move/chat/commands

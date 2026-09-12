@@ -54,8 +54,8 @@ impl PluginConfig {
 /// running with defaults (a mistyped key would otherwise go unnoticed).
 pub fn load_config(path: &str) -> Result<PluginConfig, String> {
     let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("gln-auth: cannot read config {path}: {e}"))?;
-    toml::from_str(&content).map_err(|e| format!("gln-auth: invalid config {path}: {e}"))
+        .map_err(|e| format!("0gln-auth: cannot read config {path}: {e}"))?;
+    toml::from_str(&content).map_err(|e| format!("0gln-auth: invalid config {path}: {e}"))
 }
 
 pub fn default_config_toml() -> String {
@@ -80,14 +80,14 @@ mod tests {
 
     #[test]
     fn load_config_missing_file_is_an_error() {
-        let missing = std::env::temp_dir().join("gln-auth-config-does-not-exist-9.toml");
+        let missing = std::env::temp_dir().join("0gln-auth-config-does-not-exist-9.toml");
         let _ = std::fs::remove_file(&missing);
         assert!(load_config(missing.to_str().unwrap()).is_err());
     }
 
     #[test]
     fn load_config_invalid_toml_is_an_error() {
-        let path = std::env::temp_dir().join("gln-auth-config-invalid-9.toml");
+        let path = std::env::temp_dir().join("0gln-auth-config-invalid-9.toml");
         std::fs::write(&path, "not [valid toml !!").unwrap();
         assert!(load_config(path.to_str().unwrap()).is_err());
         let _ = std::fs::remove_file(&path);
@@ -95,7 +95,7 @@ mod tests {
 
     #[test]
     fn load_config_parses_full_override() {
-        let path = std::env::temp_dir().join("gln-auth-config-full-9.toml");
+        let path = std::env::temp_dir().join("0gln-auth-config-full-9.toml");
         std::fs::write(
             &path,
             "timeout_secs = 60\nsession_minutes = 30\nmax_login_tries = 2\npw_min_len = 6\npw_max_len = 32\nname_regex = 'a+'\npremium_check_enabled = false\npremium_cache_minutes = 5\n",
@@ -119,7 +119,7 @@ mod tests {
     /// key falls back to the built-in default.
     #[test]
     fn message_override_wins_and_missing_keys_fall_back() {
-        let path = std::env::temp_dir().join("gln-auth-config-messages-9.toml");
+        let path = std::env::temp_dir().join("0gln-auth-config-messages-9.toml");
         std::fs::write(
             &path,
             "timeout_secs = 120\nsession_minutes = 120\nmax_login_tries = 5\npw_min_len = 8\npw_max_len = 64\nname_regex = 'x'\npremium_check_enabled = true\npremium_cache_minutes = 45\n\n[messages]\n\"login.wrong\" = \"Falsches Passwort.\"\n\"unknown.key\" = \"ignored\"\n",
@@ -144,7 +144,7 @@ mod tests {
     fn example_config_parses_and_matches_defaults() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("plugins")
-            .join("gln-auth")
+            .join("0gln-auth")
             .join("config.toml");
         let example = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));

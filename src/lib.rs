@@ -29,16 +29,16 @@ pub struct AppState {
     pub premium: crate::premium::PremiumCache,
 }
 
-struct GlnAuth;
+struct ZeroGlnAuth;
 
-impl Plugin for GlnAuth {
+impl Plugin for ZeroGlnAuth {
     fn new() -> Self {
         Self
     }
 
     fn metadata(&self) -> PluginMetadata {
         PluginMetadata {
-            name: "gln-auth".into(),
+            name: "0gln Auth".into(),
             version: env!("CARGO_PKG_VERSION").into(),
             authors: vec!["0glnmc".into()],
             description: "Auth system: premium auto-login, register/login for cracked".into(),
@@ -54,33 +54,33 @@ impl Plugin for GlnAuth {
     fn on_load(&self, context: Context) -> pumpkin_plugin_api::Result<()> {
         let data_folder = context.get_data_folder();
         std::fs::create_dir_all(&data_folder)
-            .map_err(|e| format!("gln-auth: cannot create data folder {data_folder}: {e}"))?;
+            .map_err(|e| format!("0gln-auth: cannot create data folder {data_folder}: {e}"))?;
 
         let config_path = Path::new(&data_folder).join("config.toml");
         if !config_path.exists() {
             std::fs::write(&config_path, default_config_toml())
-                .map_err(|e| format!("gln-auth: cannot write {}: {e}", config_path.display()))?;
+                .map_err(|e| format!("0gln-auth: cannot write {}: {e}", config_path.display()))?;
             info!(
-                "gln-auth: wrote default config to {}",
+                "0gln-auth: wrote default config to {}",
                 config_path.display()
             );
         }
         let config_str = config_path.to_str().ok_or_else(|| {
             format!(
-                "gln-auth: config path {} is not valid unicode",
+                "0gln-auth: config path {} is not valid unicode",
                 config_path.display()
             )
         })?;
         let cfg = load_config(config_str)?;
 
-        let store_path = Path::new(&data_folder).join("gln-auth.json");
+        let store_path = Path::new(&data_folder).join("0gln-auth.json");
         let store = crate::storage::AuthStore::open(store_path.to_str().ok_or_else(|| {
             format!(
-                "gln-auth: store path {} is not valid unicode",
+                "0gln-auth: store path {} is not valid unicode",
                 store_path.display()
             )
         })?)
-        .map_err(|e| format!("gln-auth: failed to open auth store: {e}"))?;
+        .map_err(|e| format!("0gln-auth: failed to open auth store: {e}"))?;
 
         let state: SharedState = Arc::new(RwLock::new(AppState {
             store,
@@ -102,22 +102,22 @@ impl Plugin for GlnAuth {
             context
                 .register_permission(&Permission {
                     node: permission.to_string(),
-                    description: "gln-auth command permission".to_string(),
+                    description: "0gln-auth command permission".to_string(),
                     default,
                     children: vec![],
                 })
-                .map_err(|e| format!("gln-auth: failed to register permission {permission}: {e}"))?;
+                .map_err(|e| format!("0gln-auth: failed to register permission {permission}: {e}"))?;
             context.register_command(command, permission);
         }
 
-        info!("gln-auth loaded");
+        info!("0gln-auth loaded");
         Ok(())
     }
 
     fn on_unload(&self, _context: Context) -> pumpkin_plugin_api::Result<()> {
-        info!("gln-auth unloaded");
+        info!("0gln-auth unloaded");
         Ok(())
     }
 }
 
-pumpkin_plugin_api::register_plugin!(GlnAuth);
+pumpkin_plugin_api::register_plugin!(ZeroGlnAuth);
