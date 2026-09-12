@@ -38,6 +38,14 @@ pub fn default_messages() -> HashMap<String, String> {
             "Account has no password, set a password first.",
         ),
         ("premium.exists", "An account with this name already exists, use /login."),
+        (
+            "premium.uuid_mismatch",
+            "This is a premium name: join with your premium (Mojang-signed-in) launcher.",
+        ),
+        (
+            "premium.uuid_wrong",
+            "You are not using this account's launcher: premium verification requires joining with the Mojang-signed-in launcher.",
+        ),
         ("timeout.kick", "Login timeout."),
     ];
     for (k, v) in entries {
@@ -74,6 +82,8 @@ mod tests {
             "premium.unavailable",
             "premium.nopass",
             "premium.exists",
+            "premium.uuid_mismatch",
+            "premium.uuid_wrong",
             "timeout.kick",
         ] {
             assert!(m.contains_key(key), "missing default for key {key}");

@@ -19,7 +19,7 @@ use std::sync::{RwLockReadGuard, RwLockWriteGuard};
 use crate::config::PluginConfig;
 use crate::handlers::message;
 use crate::hash::{hash_password, verify_password};
-use crate::premium::resolve_premium;
+use crate::premium::{resolve_premium, uuid_matches_mojang_id};
 use crate::session::{new_expiry, now_secs};
 use crate::storage::{Account, Session};
 use crate::validation::{normalize_name, validate_name, validate_password};
@@ -565,6 +565,18 @@ impl CommandHandler for PremiumHandler {
 
         match resolve_premium(&normalized) {
             Ok((true, Some(id))) => {
+                // The claimant must present the Mojang UUID in Login Start:
+                // a stock cracked launcher sends the offline-derived UUID and
+                // fails here, so it cannot claim a stranger's premium name.
+                if !uuid_matches_mojang_id(&uuid, &id) {
+                    tracing::warn!(
+                        "0gln-auth: premium claim UUID mismatch for {normalized} \
+                         (presented {uuid}, Mojang {id}) — rejected"
+                    );
+                    lock_read(&self.state).premium.put(normalized.clone(), false, now);
+                    reply_err(&sender, &message(&self.state, "premium.uuid_wrong"));
+                    return Ok(1);
+                }
                 lock_read(&self.state).premium.put(normalized.clone(), true, now);
                 let account = Account {
                     name: name.clone(),

@@ -27,6 +27,7 @@ use pumpkin_plugin_api::player::JavaKickOptions;
 use pumpkin_plugin_api::text::TextComponent;
 use pumpkin_plugin_api::{Context, Player, Server};
 
+use crate::premium::uuid_matches_mojang_id;
 use crate::session::{is_session_valid, now_secs};
 use crate::validation::normalize_name;
 use crate::{AppState, SharedState};
@@ -341,15 +342,37 @@ impl EventHandler<PlayerJoinEvent> for JoinHandler {
             }
         };
 
-        // 1. Stored premium_id auto-authenticates (no live check here).
-        if account.as_ref().is_some_and(|a| a.premium_id.is_some()) {
-            mark_authed(&self.state, &normalized);
-            data.player
-                .send_system_message(TextComponent::text(&message(
-                    &self.state,
-                    "premium.auto",
-                )), false);
-            return data;
+        // 1. Stored premium_id auto-authenticates ONLY if the UUID the client
+        // presented in Login Start matches the Mojang id for the name
+        // (JPremium handshake-detection parity). A cracked client joining
+        // with a premium-flagged name presents the offline-derived UUID and
+        // mismatches: it falls through to the frozen /login prompt instead.
+        if let Some(account) = account.as_ref() {
+            if let Some(mojang_id) = account.premium_id.as_deref() {
+                let client_uuid = data.player.get_id().to_string();
+                if uuid_matches_mojang_id(&client_uuid, mojang_id) {
+                    mark_authed(&self.state, &normalized);
+                    data.player
+                        .send_system_message(TextComponent::text(&message(
+                            &self.state,
+                            "premium.auto",
+                        )), false);
+                    return data;
+                }
+                tracing::warn!(
+                    "0gln-auth: premium UUID mismatch for {normalized} from {ip}: \
+                     cracked client on a premium-flagged name, denied auto-login"
+                );
+                data.player
+                    .send_system_message(TextComponent::text(&message(
+                        &self.state,
+                        "premium.uuid_mismatch",
+                    )), false);
+                // Fall through to the unauthenticated path below (frozen,
+                // prompted to /login) — the premium account has no password,
+                // so this effectively freezes the impersonator until the
+                // timeout kick.
+            }
         }
 
         // 2. Session resume: valid expiry AND matching IP, no new session write.

@@ -128,6 +128,25 @@ fn fetch_once(url: &str) -> Result<(u16, String), String> {
     Ok((status, body))
 }
 
+/// Compares the UUID a client presented in Login Start against the Mojang
+/// profile id for the name (JPremium's `detectPremiumUniqueIdsInHandshake`,
+/// adapted for a plugin). Stock premium launchers send their genuine Mojang
+/// UUID; stock cracked launchers send the offline UUID
+/// (`UUIDv3("OfflinePlayer:<name>")`) or none at all, which the server then
+/// derives the same way — both mismatch the Mojang id. The comparison strips
+/// hyphens and lowercases: Mojang serves the id in hyphenless form, while
+/// client UUIDs use the standard hyphenated form.
+///
+/// NOTE: in offline mode the presented UUID is client-controlled and not
+/// cryptographically authenticated, so a custom client that knows the
+/// victim's Mojang UUID can still spoof it. This check defeats every stock
+/// launcher, which is the practical threat model for cracked servers.
+pub fn uuid_matches_mojang_id(client_uuid: &str, mojang_id: &str) -> bool {
+    let strip = |s: &str| s.replace('-', "").to_lowercase();
+    let (c, m) = (strip(client_uuid), strip(mojang_id));
+    !c.is_empty() && !m.is_empty() && c == m
+}
+
 /// Live premium lookup. `Ok((true, Some(uuid)))` = premium, `Ok((false, None))`
 /// = cracked, `Err` = transport failure (caller must fail closed, no caching).
 ///
@@ -186,6 +205,32 @@ mod tests {
         assert_eq!(parse_mojang_profile_response(204, ""), None);
         assert_eq!(parse_mojang_profile_response(429, ""), None);
         assert_eq!(parse_mojang_profile_response(500, "{}"), None);
+    }
+
+    /// Hyphenated client UUID matches the hyphenless Mojang id form
+    /// (case-insensitive); offline-derived UUIDs do not.
+    #[test]
+    fn uuid_matcher_compares_hyphenless_forms() {
+        // Genuine Mojang UUID (Notch) as a client would present it, against
+        // the hyphenless id the API returns.
+        assert!(uuid_matches_mojang_id(
+            "069a79f4-444e-9472-6a5b-efca90e38aaf5",
+            "069a79f4444e94726a5befca90e38aaf5"
+        ));
+        // Offline UUID (v3 of "OfflinePlayer:steve") vs Mojang id of the
+        // same name: different -> cracked client.
+        assert!(!uuid_matches_mojang_id(
+            "b66de432-6fb9-3f71-a454-2b4f5f2a5b5f",
+            "069a79f4444e94726a5befca90e38aaf5"
+        ));
+        // Case-insensitive + hyphen tolerance.
+        assert!(uuid_matches_mojang_id(
+            "069A79F4-444E-9472-6A5B-EFCA90E38AAF5",
+            "069a79f4444e94726a5befca90e38aaf5"
+        ));
+        // Empty inputs never match (fail closed).
+        assert!(!uuid_matches_mojang_id("", "069a79f4444e94726a5befca90e38aaf5"));
+        assert!(!uuid_matches_mojang_id("069a79f4444e94726a5befca90e38aaf5", ""));
     }
 
     /// The fetch plan shares one attempt budget across BOTH endpoints: a

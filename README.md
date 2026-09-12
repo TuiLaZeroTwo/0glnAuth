@@ -93,8 +93,12 @@ followed by `/changepassword` while logged in.
 
 On every join the plugin runs this flow:
 
-1. **Stored premium flag** — an account with a stored `premium_id` is
-   auto-authenticated immediately.
+1. **Stored premium flag + UUID match** — an account with a stored `premium_id`
+   auto-authenticates ONLY if the UUID the client presented at login matches
+   the Mojang UUID for that name (premium launchers send their real Mojang
+   UUID; cracked launchers send an offline-derived one and are frozen out).
+   A cracked client joining with a premium-flagged name is denied with
+   "join with your premium launcher" and falls to the frozen /login path.
 2. **Session resume** — a stored session that is unexpired AND from the same
    IP silently resumes (no prompt).
 3. **Prompt (chat-choice)** — otherwise the player is unauthenticated and
@@ -162,9 +166,12 @@ Manual, against a live Pumpkin server (offline mode):
   error, and keeps the server running. In offline mode that means anyone
   can join as any name. Fix the storage/config and confirm `0gln Auth` shows
   up in `/plugins` before opening the server to players.
-- Residual risk (accepted by the owner): a `/premium` claim can capture an
-  unregistered stranger's premium name — the first person to run
-  `/premium` with a premium-verified name owns it on this server.
+- Residual risk (documented): `/premium` requires the claimant to join with
+  the Mojang-signed-in launcher (the Login Start UUID must match Mojang's),
+  so stock cracked launchers cannot claim or reuse a stranger's premium name.
+  A custom-modified client that already knows the victim's Mojang UUID could
+  still spoof it (offline mode never cryptographically authenticates it) —
+  this defeats stock launchers, not a determined attacker.
 - The JSON flatfile store (`0gln-auth.json`) is not safe for concurrent
   servers sharing a plugin directory — single server per store only.
 - No email or 2FA in v1.
